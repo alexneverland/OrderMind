@@ -174,3 +174,34 @@ def is_grounded_in_input(fragment: str, raw_input: str) -> bool:
     input_tokens = set(norm_input.split())
     matched_tokens = sum(1 for t in frag_tokens if t in input_tokens)
     return (matched_tokens / len(frag_tokens)) >= 0.8
+
+
+GREEK_STEM_ENDINGS = [
+    normalize_text(e)
+    for e in ['ια', 'ες', 'οι', 'ου', 'ων', 'ους', 'ας', 'ης', 'ος', 'α', 'ο', 'η', 'ι', 'ε', 'υ']
+]
+
+
+def greek_stem(word: str) -> str:
+    """
+    Lightweight Greek inflection stemmer for singular/plural order phrases.
+    e.g. 'κοκκινο' -> 'κοκκιν', 'κοκκινα' -> 'κοκκιν'
+    """
+    word = normalize_text(word).strip()
+    for ending in sorted(GREEK_STEM_ENDINGS, key=len, reverse=True):
+        if word.endswith(ending) and len(word) - len(ending) >= 3:
+            return word[:-len(ending)]
+    return word
+
+
+def stem_phrase(phrase: Optional[str]) -> str:
+    """
+    Computes stemmed phrase across all tokens for Greek order phrase matching.
+    e.g. 'κοκκινο' -> 'κοκκιν', 'κοκκινα' -> 'κοκκιν'
+         'γαλοπουλα καπνιστη' -> 'γαλοπουλ καπνιστ', 'γαλοπουλες καπνιστες' -> 'γαλοπουλ καπνιστ'
+    """
+    if not phrase:
+        return ""
+    norm = normalize_text(phrase)
+    return " ".join(greek_stem(w) for w in norm.split())
+
