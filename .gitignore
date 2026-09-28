@@ -64,6 +64,8 @@ data/samples/real/
 # Allow fixture/template samples explicitly if needed in test fixtures only
 !tests/fixtures/*.xlsx
 !tests/fixtures/*.csv
+!backend/fixtures/*.xlsx
+!backend/fixtures/*.csv
 
 # Node / Frontend
 node_modules/
