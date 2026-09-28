@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 from backend.app.models.company import Company
 from backend.app.models.customer import Customer
 from backend.app.models.product import Product
+from backend.app.models.order import Order, OrderLine
 from backend.app.models.memory import CustomerProductAlias
 
 
@@ -181,3 +182,70 @@ def test_api_correct_match_endpoint(client: TestClient, db_session):
     assert res["suggested_product_id"] == wrong_id
     assert res["correct_product_id"] == correct_id
     assert res["corrected_count"] == 1
+
+
+def test_api_correct_match_with_order_line_reference_and_validation(client: TestClient, db_session):
+    data = setup_milestone3_api_data(db_session)
+    comp_id = data["company"].id
+    cust_id = data["customer"].id
+    wrong_id = data["prod_salami"].id
+    correct_id = data["prod_turkey"].id
+
+    order = Order(
+        company_id=comp_id,
+        customer_id=cust_id,
+        order_number="ORD-API-AUDIT-1",
+        raw_input="1 καπνιστη"
+    )
+    db_session.add(order)
+    db_session.flush()
+
+    line = OrderLine(
+        order_id=order.id,
+        line_number=1,
+        original_text="1 καπνιστη",
+        product_phrase="καπνιστη",
+        requested_quantity=1.0,
+        requested_unit="piece"
+    )
+    db_session.add(line)
+    db_session.commit()
+
+    # 1. Success case using nested path parameters
+    payload = {
+        "customer_id": cust_id,
+        "suggested_product_id": wrong_id,
+        "correct_product_id": correct_id,
+        "original_phrase": "καπνιστη",
+        "notes": "Verified line correction"
+    }
+    resp = client.post(f"/api/v1/orders/{order.id}/lines/{line.id}/correct", json=payload)
+    assert resp.status_code == 200
+    res = resp.json()
+    assert res["status"] == "corrected"
+    assert res["order_id"] == order.id
+    assert res["order_line_id"] == line.id
+
+    # 2. Mismatched order_id and line_id returns 400 Bad Request
+    resp_mismatch = client.post(f"/api/v1/orders/{order.id + 999}/lines/{line.id}/correct", json=payload)
+    assert resp_mismatch.status_code == 400
+    assert "does not belong to order" in resp_mismatch.json()["detail"] or "does not exist" in resp_mismatch.json()["detail"]
+
+    # 3. Foreign company suggested_product_id returns 400 Bad Request
+    other_comp = Company(name="Another Co")
+    db_session.add(other_comp)
+    db_session.flush()
+    foreign_prod = Product(company_id=other_comp.id, sku="FOREIGN-99", description="Foreign")
+    db_session.add(foreign_prod)
+    db_session.commit()
+
+    payload_foreign = {
+        "customer_id": cust_id,
+        "suggested_product_id": foreign_prod.id,
+        "correct_product_id": correct_id,
+        "original_phrase": "καπνιστη"
+    }
+    resp_foreign = client.post("/api/v1/orders/lines/correct", json=payload_foreign)
+    assert resp_foreign.status_code == 400
+    assert "belongs to company" in resp_foreign.json()["detail"]
+

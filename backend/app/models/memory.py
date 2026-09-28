@@ -41,6 +41,7 @@ class HumanCorrection(Base):
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     customer_id = Column(Integer, ForeignKey("customers.id", ondelete="CASCADE"), nullable=False, index=True)
     order_id = Column(Integer, ForeignKey("orders.id", ondelete="SET NULL"), nullable=True, index=True)
+    order_line_id = Column(Integer, ForeignKey("order_lines.id", ondelete="SET NULL"), nullable=True, index=True)
     original_phrase = Column(String(255), nullable=False)
     suggested_product_id = Column(Integer, ForeignKey("products.id", ondelete="SET NULL"), nullable=True)
     correct_product_id = Column(Integer, ForeignKey("products.id", ondelete="CASCADE"), nullable=False)
@@ -50,5 +51,6 @@ class HumanCorrection(Base):
     # Relationships
     customer = relationship("Customer", back_populates="corrections")
     order = relationship("Order", back_populates="corrections")
+    order_line = relationship("OrderLine", back_populates="corrections")
     suggested_product = relationship("Product", foreign_keys=[suggested_product_id])
     correct_product = relationship("Product", foreign_keys=[correct_product_id])

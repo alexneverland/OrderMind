@@ -131,3 +131,5 @@ class CorrectMatchResponse(BaseModel):
     original_phrase: str
     confirmed_count: int
     corrected_count: int
+    order_id: Optional[int] = None
+    order_line_id: Optional[int] = None

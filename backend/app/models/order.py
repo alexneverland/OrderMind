@@ -71,6 +71,7 @@ class OrderLine(Base):
     matched_product = relationship("Product")
     matched_packaging = relationship("Packaging")
     candidates = relationship("MatchCandidate", back_populates="order_line", cascade="all, delete-orphan", order_by="MatchCandidate.rank")
+    corrections = relationship("HumanCorrection", back_populates="order_line")
 
 
 class MatchCandidate(Base):

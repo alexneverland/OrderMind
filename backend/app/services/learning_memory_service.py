@@ -5,6 +5,7 @@ from sqlalchemy import select
 
 from backend.app.models.customer import Customer
 from backend.app.models.product import Product
+from backend.app.models.order import Order, OrderLine
 from backend.app.models.memory import CustomerProductAlias, HumanCorrection
 from backend.app.core.text_normalizer import normalize_text
 
@@ -20,6 +21,65 @@ class LearningMemoryService:
     Records operator confirmations and corrections atomically in SQL.
     Ensures company isolation and memory protection without blind 100% trusting.
     """
+
+    @classmethod
+    def _validate_order_context(
+        cls,
+        db: Session,
+        customer: Customer,
+        order_id: Optional[int] = None,
+        line_id: Optional[int] = None,
+    ) -> Optional[int]:
+        """
+        Validates order and order line consistency:
+        - If line_id is provided, verifies that order line exists.
+        - If order_id is provided, verifies order exists and belongs to customer and customer's company.
+        - If both provided, verifies order_line.order_id == order_id.
+        - If only line_id provided, verifies line's parent order belongs to customer and customer's company.
+        Returns the resolved order_id.
+        """
+        resolved_order_id = order_id
+        if order_id is not None:
+            order = db.get(Order, order_id)
+            if not order:
+                raise ValueError(f"Order with id {order_id} does not exist")
+            if order.company_id != customer.company_id:
+                raise ValueError(
+                    f"Order {order_id} belongs to company {order.company_id}, "
+                    f"not customer company {customer.company_id}"
+                )
+            if order.customer_id != customer.id:
+                raise ValueError(
+                    f"Order {order_id} belongs to customer {order.customer_id}, "
+                    f"not customer {customer.id}"
+                )
+
+        if line_id is not None:
+            order_line = db.get(OrderLine, line_id)
+            if not order_line:
+                raise ValueError(f"Order line with id {line_id} does not exist")
+            if order_id is not None and order_line.order_id != order_id:
+                raise ValueError(
+                    f"Order line {line_id} belongs to order {order_line.order_id}, "
+                    f"not order {order_id}"
+                )
+            if order_id is None:
+                parent_order = db.get(Order, order_line.order_id)
+                if not parent_order:
+                    raise ValueError(f"Parent order {order_line.order_id} for order line {line_id} does not exist")
+                if parent_order.company_id != customer.company_id:
+                    raise ValueError(
+                        f"Order line {line_id} belongs to company {parent_order.company_id}, "
+                        f"not customer company {customer.company_id}"
+                    )
+                if parent_order.customer_id != customer.id:
+                    raise ValueError(
+                        f"Order line {line_id} belongs to customer {parent_order.customer_id}, "
+                        f"not customer {customer.id}"
+                    )
+                resolved_order_id = order_line.order_id
+
+        return resolved_order_id
 
     @classmethod
     def confirm_match(
@@ -123,6 +183,18 @@ class LearningMemoryService:
                 f"not customer company {customer.company_id}"
             )
 
+        if suggested_product_id is not None:
+            suggested_prod = db.get(Product, suggested_product_id)
+            if not suggested_prod:
+                raise ValueError(f"Suggested product with id {suggested_product_id} does not exist")
+            if suggested_prod.company_id != customer.company_id:
+                raise ValueError(
+                    f"Suggested product {suggested_product_id} belongs to company {suggested_prod.company_id}, "
+                    f"not customer company {customer.company_id}"
+                )
+
+        resolved_order_id = cls._validate_order_context(db, customer, order_id=order_id, line_id=line_id)
+
         norm_phrase = normalize_text(original_phrase)
         if not norm_phrase:
             raise ValueError("Original phrase cannot be empty")
@@ -131,7 +203,8 @@ class LearningMemoryService:
             # 1. Audit log
             correction = HumanCorrection(
                 customer_id=customer_id,
-                order_id=order_id,
+                order_id=resolved_order_id,
+                order_line_id=line_id,
                 original_phrase=original_phrase.strip(),
                 suggested_product_id=suggested_product_id,
                 correct_product_id=correct_product_id,

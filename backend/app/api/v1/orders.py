@@ -221,7 +221,9 @@ def correct_line_match_endpoint(
             correct_product_id=alias.product_id,
             original_phrase=alias.original_phrase,
             confirmed_count=alias.confirmed_count,
-            corrected_count=alias.corrected_count
+            corrected_count=alias.corrected_count,
+            order_id=correction.order_id,
+            order_line_id=correction.order_line_id
         )
     except ValueError as ve:
         raise HTTPException(

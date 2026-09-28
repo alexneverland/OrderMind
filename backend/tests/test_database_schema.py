@@ -200,3 +200,58 @@ def test_order_line_json_confidence_reasons(db_session):
     assert isinstance(saved_line.confidence_reasons, list)
     assert saved_line.confidence_reasons == reasons
     assert saved_line.confidence_score == 0.94
+
+
+def test_human_correction_order_line_relationship(db_session):
+    """
+    Verify HumanCorrection.order_line_id FK and ORM bidirectional relationship with OrderLine.
+    """
+    comp = Company(name="Relationship Test Co")
+    db_session.add(comp)
+    db_session.flush()
+
+    cust = Customer(company_id=comp.id, customer_code="REL-CUST", customer_name="Rel Cust")
+    prod_a = Product(company_id=comp.id, sku="REL-A", description="Prod A")
+    prod_b = Product(company_id=comp.id, sku="REL-B", description="Prod B")
+    db_session.add_all([cust, prod_a, prod_b])
+    db_session.flush()
+
+    order = Order(
+        company_id=comp.id,
+        customer_id=cust.id,
+        order_number="ORD-REL-01",
+        raw_input="test order line"
+    )
+    db_session.add(order)
+    db_session.flush()
+
+    line = OrderLine(
+        order_id=order.id,
+        line_number=1,
+        original_text="1 prod a",
+        product_phrase="prod a",
+        requested_quantity=1.0,
+        requested_unit="piece"
+    )
+    db_session.add(line)
+    db_session.flush()
+
+    correction = HumanCorrection(
+        customer_id=cust.id,
+        order_id=order.id,
+        order_line_id=line.id,
+        original_phrase="prod a",
+        suggested_product_id=prod_a.id,
+        correct_product_id=prod_b.id,
+        notes="Corrected to B"
+    )
+    db_session.add(correction)
+    db_session.commit()
+
+    # Query back line and check relationship
+    saved_line = db_session.execute(select(OrderLine).where(OrderLine.id == line.id)).scalar_one()
+    assert len(saved_line.corrections) == 1
+    assert saved_line.corrections[0].id == correction.id
+    assert saved_line.corrections[0].order_line_id == line.id
+    assert saved_line.corrections[0].order_line == saved_line
+
