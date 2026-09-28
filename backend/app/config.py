@@ -19,10 +19,12 @@ class Settings(BaseSettings):
     AI_PROVIDER: str = Field(default="mock", description="Active AI provider: mock, gemini, openai, vertex, anthropic")
     AI_MODEL: str = Field(default="mock-model", description="AI model name")
 
-    # API keys (loaded from .env only, never committed)
+    # API keys and Cloud credentials (loaded from .env only, never committed)
     GEMINI_API_KEY: Optional[str] = None
     OPENAI_API_KEY: Optional[str] = None
     ANTHROPIC_API_KEY: Optional[str] = None
+    GOOGLE_CLOUD_PROJECT: Optional[str] = None
+    GOOGLE_CLOUD_LOCATION: Optional[str] = "us-central1"
 
     model_config = SettingsConfigDict(
         env_file=".env",
