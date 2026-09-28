@@ -67,8 +67,9 @@ class ExportEngine:
         if not mappings:
             raise OrderExportError(f"Export profile '{profile.name}' has no column mappings defined.")
 
-        # Build data rows
-        headers = [m.output_column_name for m in mappings]
+        # Build data rows & headers
+        # Output headers are sanitized against formula injection (CWE-1236) without mutating DB mappings
+        headers = [sanitize_formula_injection(m.output_column_name) for m in mappings]
         data_rows: List[List[Any]] = []
 
         # Sort lines by line_number for deterministic output

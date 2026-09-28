@@ -112,16 +112,61 @@ class OrderWorkflowService:
             db.flush()
 
             # Persist match candidates for explainability and operator audit
+            persisted_product_ids = set()
+
+            if line_res.best_match:
+                winning_match_type = "best_match"
+                if line_res.confidence.reasons:
+                    first_reason = line_res.confidence.reasons[0].lower()
+                    if "sku" in first_reason:
+                        winning_match_type = "exact_sku"
+                    elif "barcode" in first_reason:
+                        winning_match_type = "exact_barcode"
+                    elif "customer" in first_reason and "alias" in first_reason:
+                        winning_match_type = "customer_alias"
+                    elif "global" in first_reason and "alias" in first_reason:
+                        winning_match_type = "global_alias"
+                    elif "exact" in first_reason:
+                        winning_match_type = "exact_match"
+                    elif "fuzzy" in first_reason:
+                        winning_match_type = "fuzzy_match"
+                    elif "ai" in first_reason or "rerank" in first_reason:
+                        winning_match_type = "ai_rerank"
+
+                winner_expl = "; ".join(line_res.confidence.reasons) if line_res.confidence.reasons else "Best match"
+                if len(winner_expl) > 500:
+                    winner_expl = winner_expl[:497] + "..."
+
+                winner_record = MatchCandidate(
+                    order_line_id=order_line.id,
+                    product_id=line_res.best_match.product_id,
+                    rank=1,
+                    match_type=winning_match_type,
+                    score=line_res.confidence.score,
+                    explanation=winner_expl
+                )
+                db.add(winner_record)
+                persisted_product_ids.add(line_res.best_match.product_id)
+
             for cand in line_res.alternatives:
+                if cand.product_id in persisted_product_ids:
+                    continue
+                cand_rank = cand.rank if cand.rank > 1 else (2 if line_res.best_match else 1)
+                cand_match_type = cand.evidence[0].evidence_type if cand.evidence else "alternative"
+                cand_expl = "; ".join(e.detail for e in cand.evidence) if cand.evidence else ""
+                if len(cand_expl) > 500:
+                    cand_expl = cand_expl[:497] + "..."
+
                 cand_record = MatchCandidate(
                     order_line_id=order_line.id,
                     product_id=cand.product_id,
-                    rank=cand.rank,
-                    match_type=cand.evidence[0].evidence_type if cand.evidence else "unknown",
+                    rank=cand_rank,
+                    match_type=cand_match_type[:50],
                     score=cand.score,
-                    explanation="; ".join(e.detail for e in cand.evidence) if cand.evidence else ""
+                    explanation=cand_expl
                 )
                 db.add(cand_record)
+                persisted_product_ids.add(cand.product_id)
 
         db.commit()
         db.refresh(order)
@@ -144,7 +189,7 @@ class OrderWorkflowService:
         if not order:
             raise ValueError(f"Order with id {order_id} does not exist")
 
-        if order.status in (OrderStatus.CANCELLED.value, OrderStatus.EXPORTED.value):
+        if order.status in (OrderStatus.APPROVED.value, OrderStatus.CANCELLED.value, OrderStatus.EXPORTED.value):
             raise ValueError(f"Order {order_id} is '{order.status}' and its lines cannot be modified")
 
         order_line = db.get(OrderLine, line_id)
@@ -195,7 +240,7 @@ class OrderWorkflowService:
         if not order:
             raise ValueError(f"Order with id {order_id} does not exist")
 
-        if order.status in (OrderStatus.CANCELLED.value, OrderStatus.EXPORTED.value):
+        if order.status in (OrderStatus.APPROVED.value, OrderStatus.CANCELLED.value, OrderStatus.EXPORTED.value):
             raise ValueError(f"Order {order_id} is '{order.status}' and its lines cannot be modified")
 
         order_line = db.get(OrderLine, line_id)
@@ -246,18 +291,18 @@ class OrderWorkflowService:
         order_id: int,
         line_id: int,
         final_quantity: Optional[float] = None,
-        final_unit: Optional[str] = None,
-        final_product_id: Optional[int] = None
+        final_unit: Optional[str] = None
     ) -> OrderLine:
         """
-        Allows operator to adjust approved values (quantity, unit, product)
+        Allows operator to adjust approved values (quantity, unit)
         without destroying original requested values.
+        Product mutation is strictly prohibited here and must use correct_line().
         """
         order = db.get(Order, order_id)
         if not order:
             raise ValueError(f"Order with id {order_id} does not exist")
 
-        if order.status in (OrderStatus.CANCELLED.value, OrderStatus.EXPORTED.value):
+        if order.status in (OrderStatus.APPROVED.value, OrderStatus.CANCELLED.value, OrderStatus.EXPORTED.value):
             raise ValueError(f"Order {order_id} is '{order.status}' and its lines cannot be modified")
 
         order_line = db.get(OrderLine, line_id)
@@ -266,21 +311,6 @@ class OrderWorkflowService:
 
         if order_line.order_id != order_id:
             raise ValueError(f"Order line {line_id} does not belong to order {order_id}")
-
-        if final_product_id is not None:
-            prod = db.get(Product, final_product_id)
-            if not prod:
-                raise ValueError(f"Product with id {final_product_id} does not exist")
-            if prod.company_id != order.company_id:
-                raise ValueError(
-                    f"Product {final_product_id} belongs to company {prod.company_id}, "
-                    f"not order company {order.company_id}"
-                )
-            order_line.matched_product_id = prod.id
-            order_line.final_sku = prod.sku
-            if not final_unit:
-                order_line.final_unit = prod.unit
-            order_line.status = OrderLineStatus.CORRECTED.value
 
         if final_quantity is not None:
             if final_quantity <= 0:

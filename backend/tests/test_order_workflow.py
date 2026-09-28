@@ -402,3 +402,183 @@ def test_canonical_order_structure(db_session):
     assert canonical.items[0].sku == "SKU-7843"
     assert canonical.items[0].quantity == 10.0
     assert canonical.items[0].unit == "piece"
+
+
+def test_approved_order_is_immutable(db_session):
+    """
+    Verify that an approved order is strictly immutable:
+    confirm_line, correct_line, and update_line_final_values must all reject modifications.
+    """
+    data = setup_workflow_data(db_session)
+    comp = data["company"]
+    cust = data["customer"]
+    prod1 = data["prod1"]
+    prod2 = data["prod2"]
+
+    line_match = LineMatchResult(
+        line_number=1,
+        original_text="10 τεμ γαλοπουλα",
+        product_phrase="γαλοπουλα",
+        quantity=10.0,
+        unit="piece",
+        best_match=MatchedProductInfo(
+            product_id=prod1.id,
+            sku=prod1.sku,
+            description=prod1.description,
+            unit="piece"
+        ),
+        confidence=ConfidenceResult(score=0.98, decision=MatchDecision.AUTO_ACCEPT)
+    )
+
+    order = OrderWorkflowService.create_order_from_match(
+        db=db_session,
+        company_id=comp.id,
+        customer_id=cust.id,
+        raw_input="10 τεμ γαλοπουλα",
+        lines=[line_match]
+    )
+    line_id = order.lines[0].id
+
+    # Approve order
+    OrderWorkflowService.approve_order(db=db_session, order_id=order.id)
+    assert order.status == OrderStatus.APPROVED.value
+
+    # 1. confirm_line must fail
+    with pytest.raises(ValueError, match="is 'approved' and its lines cannot be modified"):
+        OrderWorkflowService.confirm_line(db=db_session, order_id=order.id, line_id=line_id)
+
+    # 2. correct_line must fail
+    with pytest.raises(ValueError, match="is 'approved' and its lines cannot be modified"):
+        OrderWorkflowService.correct_line(
+            db=db_session, order_id=order.id, line_id=line_id, correct_product_id=prod2.id
+        )
+
+    # 3. update_line_final_values must fail
+    with pytest.raises(ValueError, match="is 'approved' and its lines cannot be modified"):
+        OrderWorkflowService.update_line_final_values(
+            db=db_session, order_id=order.id, line_id=line_id, final_quantity=20.0
+        )
+
+
+def test_update_line_final_values_excludes_product_mutation(db_session):
+    """
+    Verify that update_line_final_values does NOT accept product mutations.
+    Product corrections must go exclusively through correct_line().
+    """
+    import inspect
+    sig = inspect.signature(OrderWorkflowService.update_line_final_values)
+    assert "final_product_id" not in sig.parameters, "final_product_id must not be a parameter of update_line_final_values"
+
+    data = setup_workflow_data(db_session)
+    comp = data["company"]
+    cust = data["customer"]
+    prod1 = data["prod1"]
+
+    line_match = LineMatchResult(
+        line_number=1,
+        original_text="10 τεμ γαλοπουλα",
+        product_phrase="γαλοπουλα",
+        quantity=10.0,
+        unit="piece",
+        best_match=MatchedProductInfo(
+            product_id=prod1.id,
+            sku=prod1.sku,
+            description=prod1.description,
+            unit="piece"
+        ),
+        confidence=ConfidenceResult(score=0.98, decision=MatchDecision.AUTO_ACCEPT)
+    )
+
+    order = OrderWorkflowService.create_order_from_match(
+        db=db_session,
+        company_id=comp.id,
+        customer_id=cust.id,
+        raw_input="10 τεμ γαλοπουλα",
+        lines=[line_match]
+    )
+    line_id = order.lines[0].id
+
+    # Mutating quantity and unit is allowed before approval
+    updated = OrderWorkflowService.update_line_final_values(
+        db=db_session,
+        order_id=order.id,
+        line_id=line_id,
+        final_quantity=15.0,
+        final_unit="kg"
+    )
+    assert updated.final_quantity == 15.0
+    assert updated.final_unit == "kg"
+    # Product remains unchanged
+    assert updated.matched_product_id == prod1.id
+    assert updated.final_sku == prod1.sku
+
+
+def test_winning_match_candidate_persisted_as_rank_1(db_session):
+    """
+    Verify that create_order_from_match persists the winning candidate as rank 1,
+    and alternatives follow at rank 2+, without duplicating the winning product.
+    """
+    data = setup_workflow_data(db_session)
+    comp = data["company"]
+    cust = data["customer"]
+    prod1 = data["prod1"]
+    prod2 = data["prod2"]
+
+    from backend.app.schemas.matching import MatchCandidateDto, MatchEvidence, MatchPriority
+
+    line_match = LineMatchResult(
+        line_number=1,
+        original_text="10 τεμ γαλοπουλα",
+        product_phrase="γαλοπουλα καπνιστη",
+        quantity=10.0,
+        unit="piece",
+        best_match=MatchedProductInfo(
+            product_id=prod1.id,
+            sku=prod1.sku,
+            description=prod1.description,
+            unit="piece"
+        ),
+        confidence=ConfidenceResult(
+            score=0.95,
+            decision=MatchDecision.AUTO_ACCEPT,
+            reasons=["+ Exact SKU match 'SKU-7843'", "+ Packaging matched"]
+        ),
+        alternatives=[
+            # Candidate 2 (alternative)
+            MatchCandidateDto(
+                product_id=prod2.id,
+                sku=prod2.sku,
+                description=prod2.description,
+                rank=2,
+                score=0.72,
+                match_priority=MatchPriority.FUZZY_DESCRIPTION,
+                evidence=[MatchEvidence(evidence_type="fuzzy_description", score=0.72, detail="Fuzzy description match")]
+            )
+        ]
+    )
+
+    order = OrderWorkflowService.create_order_from_match(
+        db=db_session,
+        company_id=comp.id,
+        customer_id=cust.id,
+        raw_input="10 τεμ γαλοπουλα",
+        lines=[line_match]
+    )
+
+    order_line = order.lines[0]
+    candidates = order_line.candidates
+    assert len(candidates) == 2
+
+    # Rank 1: Winning best_match
+    winner = next(c for c in candidates if c.rank == 1)
+    assert winner.product_id == prod1.id
+    assert winner.score == 0.95
+    assert winner.match_type == "exact_sku"
+    assert "+ Exact SKU match 'SKU-7843'" in winner.explanation
+
+    # Rank 2: Alternative
+    alt = next(c for c in candidates if c.rank == 2)
+    assert alt.product_id == prod2.id
+    assert alt.score == 0.72
+    assert alt.match_type == "fuzzy_description"
+

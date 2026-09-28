@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, Text, DateTime, ForeignKey, JSON, Boolean, func
+from sqlalchemy import Column, Integer, String, Float, Text, DateTime, ForeignKey, JSON, Boolean, func, UniqueConstraint
 from sqlalchemy.orm import relationship
 from backend.app.core.database import Base
 
@@ -22,12 +22,15 @@ class OrderSource(Base):
 
 class Order(Base):
     __tablename__ = "orders"
+    __table_args__ = (
+        UniqueConstraint("company_id", "order_number", name="uq_company_order_number"),
+    )
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     company_id = Column(Integer, ForeignKey("companies.id", ondelete="CASCADE"), nullable=False, index=True)
     customer_id = Column(Integer, ForeignKey("customers.id", ondelete="RESTRICT"), nullable=False, index=True)
     order_source_id = Column(Integer, ForeignKey("order_sources.id", ondelete="SET NULL"), nullable=True, index=True)
-    order_number = Column(String(100), nullable=False, unique=True, index=True)
+    order_number = Column(String(100), nullable=False, index=True)
     status = Column(String(50), nullable=False, default="pending_review")  # draft, processing, pending_review, approved, exported, cancelled
     overall_confidence = Column(Float, default=0.0, nullable=False)
     raw_input = Column(Text, nullable=False)

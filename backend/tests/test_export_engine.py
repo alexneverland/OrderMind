@@ -405,3 +405,66 @@ def test_company_isolation_on_export(db_session):
 
     with pytest.raises(ValueError, match="belongs to company"):
         ExportEngine.export_order(db=db_session, order_id=order.id, profile_id=foreign_profile.id)
+
+
+def test_export_header_formula_injection_sanitization(db_session):
+    """
+    Verify that export headers starting with formula triggers (=, +, -, @)
+    are sanitized with a leading quote in XLSX and CSV output,
+    while leaving the stored mapping output_column_name intact in the database.
+    """
+    data = setup_export_data(db_session)
+    comp = data["company"]
+    order = data["order"]
+
+    profile = ExportProfileService.create_profile(
+        db=db_session,
+        payload=ExportProfileCreate(
+            company_id=comp.id,
+            name="Formula Header Profile",
+            format="csv",
+            delimiter=";",
+            mappings=[
+                ExportFieldMappingCreate(column_order=1, output_column_name="=CMD|' /C calc'!A0", source_field="line.sku"),
+                ExportFieldMappingCreate(column_order=2, output_column_name="+SUM_COL", source_field="line.quantity"),
+                ExportFieldMappingCreate(column_order=3, output_column_name="-DIFF_COL", source_field="line.unit"),
+                ExportFieldMappingCreate(column_order=4, output_column_name="@USER_COL", source_field="customer.customer_name"),
+            ]
+        )
+    )
+
+    # 1. Test CSV export headers
+    file_bytes, media_type, filename = ExportEngine.export_order(
+        db=db_session, order_id=order.id, profile_id=profile.id, preview=True
+    )
+    csv_text = file_bytes.decode("utf-8-sig")
+    reader = list(csv.reader(io.StringIO(csv_text), delimiter=";"))
+    csv_headers = reader[0]
+    assert csv_headers[0] == "'=CMD|' /C calc'!A0"
+    assert csv_headers[1] == "'+SUM_COL"
+    assert csv_headers[2] == "'-DIFF_COL"
+    assert csv_headers[3] == "'@USER_COL"
+
+    # 2. Test XLSX export headers
+    profile.format = "xlsx"
+    db_session.commit()
+
+    xlsx_bytes, _, _ = ExportEngine.export_order(
+        db=db_session, order_id=order.id, profile_id=profile.id, preview=True
+    )
+    wb = openpyxl.load_workbook(io.BytesIO(xlsx_bytes))
+    ws = wb.active
+    xlsx_headers = [cell.value for cell in ws[1]]
+    assert xlsx_headers[0] == "'=CMD|' /C calc'!A0"
+    assert xlsx_headers[1] == "'+SUM_COL"
+    assert xlsx_headers[2] == "'-DIFF_COL"
+    assert xlsx_headers[3] == "'@USER_COL"
+
+    # 3. Database stored mappings must remain UNTOUCHED
+    db_session.refresh(profile)
+    stored_names = [m.output_column_name for m in profile.field_mappings]
+    assert "=CMD|' /C calc'!A0" in stored_names
+    assert "+SUM_COL" in stored_names
+    assert "-DIFF_COL" in stored_names
+    assert "@USER_COL" in stored_names
+

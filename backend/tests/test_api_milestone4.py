@@ -263,6 +263,38 @@ def test_api_export_profile_crud_and_patch_line_values(client: TestClient, db_se
     assert patched_line["requested_quantity"] == 10.0
     assert patched_line["requested_unit"] == "piece"
 
+    # Attempting to mutate product via PATCH has no effect on product
+    orig_product_id = patched_line["matched_product_id"]
+    resp_patch_prod = client.patch(
+        f"/api/v1/orders/{order_id}/lines/{line_id}",
+        json={"final_product_id": 9999, "final_quantity": 30.0}
+    )
+    assert resp_patch_prod.status_code == 200
+    patched_line_prod = resp_patch_prod.json()
+    assert patched_line_prod["matched_product_id"] == orig_product_id
+    assert patched_line_prod["final_quantity"] == 30.0
+
+    # Approve order
+    resp_app = client.post(f"/api/v1/orders/{order_id}/approve")
+    assert resp_app.status_code == 200
+    assert resp_app.json()["status"] == "approved"
+
+    # Modifying approved order lines via PATCH must return 400
+    resp_patch_after_app = client.patch(
+        f"/api/v1/orders/{order_id}/lines/{line_id}",
+        json={"final_quantity": 40.0}
+    )
+    assert resp_patch_after_app.status_code == 400
+    assert "lines cannot be modified" in resp_patch_after_app.json()["detail"]
+
+    # Confirming line on approved order must return 400
+    resp_confirm_after_app = client.post(
+        f"/api/v1/orders/{order_id}/lines/{line_id}/confirm",
+        json={"customer_id": cust_id, "product_id": orig_product_id, "original_phrase": "κοκκινα"}
+    )
+    assert resp_confirm_after_app.status_code == 400
+    assert "lines cannot be modified" in resp_confirm_after_app.json()["detail"]
+
     # DELETE profile
     resp_del = client.delete(f"/api/v1/export-profiles/{prof_id}")
     assert resp_del.status_code == 204

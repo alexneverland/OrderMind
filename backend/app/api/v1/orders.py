@@ -283,8 +283,8 @@ def update_line_final_values_endpoint(
     db: Session = Depends(get_db)
 ):
     """
-    Operator modifies final product, quantity, or unit before approval
-    without altering requested values.
+    Operator modifies final quantity or unit before approval
+    without altering requested values. Product mutation must use the correct_line endpoint.
     """
     try:
         line = OrderWorkflowService.update_line_final_values(
@@ -292,8 +292,7 @@ def update_line_final_values_endpoint(
             order_id=order_id,
             line_id=line_id,
             final_quantity=payload.final_quantity,
-            final_unit=payload.final_unit,
-            final_product_id=payload.final_product_id
+            final_unit=payload.final_unit
         )
         return line
     except ValueError as ve:

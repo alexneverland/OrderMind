@@ -255,3 +255,42 @@ def test_human_correction_order_line_relationship(db_session):
     assert saved_line.corrections[0].order_line_id == line.id
     assert saved_line.corrections[0].order_line == saved_line
 
+
+def test_order_number_unique_per_company(db_session):
+    """
+    Verify Order.order_number is scoped per company:
+    - Same order_number across different companies is allowed.
+    - Duplicate order_number within the same company raises IntegrityError.
+    """
+    comp1 = Company(name="Company One")
+    comp2 = Company(name="Company Two")
+    db_session.add_all([comp1, comp2])
+    db_session.flush()
+
+    cust1 = Customer(company_id=comp1.id, customer_code="CUST-1", customer_name="Cust 1")
+    cust2 = Customer(company_id=comp2.id, customer_code="CUST-2", customer_name="Cust 2")
+    db_session.add_all([cust1, cust2])
+    db_session.flush()
+
+    shared_order_no = "ORD-2026-SHARED-001"
+
+    # Order in company 1
+    order1 = Order(company_id=comp1.id, customer_id=cust1.id, order_number=shared_order_no, raw_input="order 1")
+    db_session.add(order1)
+    db_session.commit()
+
+    # Same order_number in company 2 must SUCCEED
+    order2 = Order(company_id=comp2.id, customer_id=cust2.id, order_number=shared_order_no, raw_input="order 2")
+    db_session.add(order2)
+    db_session.commit()
+    assert order1.id != order2.id
+    assert order1.order_number == order2.order_number
+
+    # Duplicate order_number in company 1 must FAIL with IntegrityError
+    dup_order = Order(company_id=comp1.id, customer_id=cust1.id, order_number=shared_order_no, raw_input="dup order")
+    db_session.add(dup_order)
+    with pytest.raises(IntegrityError):
+        db_session.commit()
+    db_session.rollback()
+
+

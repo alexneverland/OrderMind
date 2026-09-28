@@ -84,7 +84,6 @@ class OrderApprovalResponse(BaseModel):
 
 
 class OrderLineUpdateValuesRequest(BaseModel):
-    final_product_id: Optional[int] = None
     final_quantity: Optional[float] = Field(default=None, gt=0)
     final_unit: Optional[str] = None
 
