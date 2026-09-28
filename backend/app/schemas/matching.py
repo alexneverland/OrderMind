@@ -9,10 +9,28 @@ class MatchDecision(str, Enum):
     UNRESOLVED = "unresolved"
 
 
+class MatchPriority(int, Enum):
+    """
+    Deterministic business match priority.
+    Lower number indicates strictly higher priority in candidate ranking.
+    """
+    EXACT_SKU = 1
+    EXACT_BARCODE = 2
+    EXACT_CUSTOMER_ALIAS = 3
+    EXACT_GLOBAL_ALIAS = 4
+    EXACT_NORMALIZED_DESCRIPTION = 5
+    FUZZY_CUSTOMER_ALIAS = 6
+    FUZZY_GLOBAL_ALIAS = 7
+    FUZZY_DESCRIPTION = 8
+    AI_RERANK = 9
+    UNKNOWN = 99
+
+
 class MatchEvidence(BaseModel):
     evidence_type: str = Field(..., description="e.g. exact_sku, exact_barcode, customer_alias_exact, fuzzy_description")
     score: float = Field(..., ge=0.0, le=1.0)
     detail: str = Field(..., description="Human-readable explanation of this evidence")
+    priority: int = Field(default=MatchPriority.UNKNOWN, description="Deterministic match priority (lower is higher priority)")
 
 
 class MatchedProductInfo(BaseModel):
@@ -30,7 +48,9 @@ class MatchCandidateDto(BaseModel):
     barcode: Optional[str] = None
     rank: int = 1
     score: float = 0.0
+    match_priority: int = Field(default=MatchPriority.UNKNOWN, description="Deterministic match priority (lower is higher priority)")
     evidence: List[MatchEvidence] = Field(default_factory=list)
+
 
 
 class ConfidenceResult(BaseModel):

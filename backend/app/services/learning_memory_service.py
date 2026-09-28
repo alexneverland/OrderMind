@@ -9,6 +9,11 @@ from backend.app.models.memory import CustomerProductAlias, HumanCorrection
 from backend.app.core.text_normalizer import normalize_text
 
 
+class AliasConflictError(ValueError):
+    """Raised when confirm_match encounters an existing customer alias pointing to a different product."""
+    pass
+
+
 class LearningMemoryService:
     """
     Manages customer-specific memory learning loop.
@@ -28,8 +33,8 @@ class LearningMemoryService:
     ) -> CustomerProductAlias:
         """
         Confirms a match for a customer:
-        - If CustomerProductAlias exists: increments confirmed_count, updates last_confirmed_at.
-        - If conflict exists (different product): updates product_id, increments corrected_count.
+        - If CustomerProductAlias exists and matches product: increments confirmed_count, updates last_confirmed_at.
+        - If conflict exists (different product): raises AliasConflictError (mutation forbidden via confirm).
         - If none exists: creates new CustomerProductAlias with confirmed_count=1, corrected_count=0.
         """
         customer = db.get(Customer, customer_id)
@@ -56,28 +61,28 @@ class LearningMemoryService:
         )
         alias = db.execute(stmt).scalar_one_or_none()
 
-        try:
-            if alias:
-                if alias.product_id == product_id:
-                    alias.confirmed_count += 1
-                else:
-                    alias.product_id = product_id
-                    alias.corrected_count += 1
-                alias.last_confirmed_at = datetime.now(timezone.utc)
-                alias.active = True
-            else:
-                alias = CustomerProductAlias(
-                    customer_id=customer_id,
-                    product_id=product_id,
-                    original_phrase=original_phrase.strip(),
-                    normalized_phrase=norm_phrase,
-                    confirmed_count=1,
-                    corrected_count=0,
-                    active=True,
-                    last_confirmed_at=datetime.now(timezone.utc)
+        if alias:
+            if alias.product_id != product_id:
+                raise AliasConflictError(
+                    "Existing customer alias points to a different product. Use correct_match() to change the mapping."
                 )
-                db.add(alias)
+            alias.confirmed_count += 1
+            alias.last_confirmed_at = datetime.now(timezone.utc)
+            alias.active = True
+        else:
+            alias = CustomerProductAlias(
+                customer_id=customer_id,
+                product_id=product_id,
+                original_phrase=original_phrase.strip(),
+                normalized_phrase=norm_phrase,
+                confirmed_count=1,
+                corrected_count=0,
+                active=True,
+                last_confirmed_at=datetime.now(timezone.utc)
+            )
+            db.add(alias)
 
+        try:
             db.commit()
             db.refresh(alias)
             return alias
@@ -101,6 +106,7 @@ class LearningMemoryService:
         Atomically records an operator correction:
         - Writes HumanCorrection audit row
         - Updates or creates CustomerProductAlias pointing to correct_product_id
+        - Resets confirmed_count to 1 if product changed (never transfers old confirmations!)
         - Increments corrected_count
         """
         customer = db.get(Customer, customer_id)
@@ -141,8 +147,12 @@ class LearningMemoryService:
             alias = db.execute(stmt).scalar_one_or_none()
 
             if alias:
-                alias.product_id = correct_product_id
-                alias.corrected_count += 1
+                if alias.product_id != correct_product_id:
+                    alias.product_id = correct_product_id
+                    alias.confirmed_count = 1  # Reset to 1 for the newly mapped product!
+                    alias.corrected_count += 1
+                else:
+                    alias.corrected_count += 1
                 alias.last_confirmed_at = datetime.now(timezone.utc)
                 alias.active = True
             else:
@@ -165,3 +175,4 @@ class LearningMemoryService:
         except Exception:
             db.rollback()
             raise
+

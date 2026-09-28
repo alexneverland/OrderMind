@@ -12,9 +12,23 @@ from backend.app.schemas.matching import (
     ConfidenceResult,
     MatchedProductInfo,
     LineMatchResult,
-    MatchDecision
+    MatchDecision,
+    MatchPriority
 )
 from backend.app.services.confidence_scorer import ConfidenceScorer
+
+
+EVIDENCE_TYPE_PRIORITY: Dict[str, MatchPriority] = {
+    "exact_sku": MatchPriority.EXACT_SKU,
+    "exact_barcode": MatchPriority.EXACT_BARCODE,
+    "customer_alias_exact": MatchPriority.EXACT_CUSTOMER_ALIAS,
+    "global_alias_exact": MatchPriority.EXACT_GLOBAL_ALIAS,
+    "exact_normalized_description": MatchPriority.EXACT_NORMALIZED_DESCRIPTION,
+    "fuzzy_customer_alias": MatchPriority.FUZZY_CUSTOMER_ALIAS,
+    "fuzzy_alias": MatchPriority.FUZZY_GLOBAL_ALIAS,
+    "fuzzy_description": MatchPriority.FUZZY_DESCRIPTION,
+}
+
 
 
 class MatchingEngine:
@@ -211,7 +225,9 @@ class MatchingEngine:
         for prod_id, c_data in candidate_map.items():
             prod: Product = c_data["product"]
             evidences: List[MatchEvidence] = c_data["evidences"]
-            primary_ev = max(evidences, key=lambda e: e.score)
+            # Primary evidence is selected by deterministic priority first, then score
+            primary_ev = min(evidences, key=lambda e: (e.priority, -e.score))
+            cand_priority = min(e.priority for e in evidences)
 
             # Packaging check
             packaging_compatible: Optional[bool] = None
@@ -244,12 +260,15 @@ class MatchingEngine:
                 description=prod.description,
                 barcode=prod.barcode,
                 score=conf_res.score,
+                match_priority=cand_priority,
                 evidence=evidences
             )
             scored_candidates.append((conf_res.score, candidate_dto, conf_res, prod))
 
-        # Sort candidates descending by confidence score
-        scored_candidates.sort(key=lambda x: x[0], reverse=True)
+        # Sort candidates deterministically:
+        # 1. Match Priority ASCENDING (1=SKU, 2=Barcode, 3=Cust Alias, 4=Global Alias, 5=Description, etc.)
+        # 2. Confidence Score DESCENDING (-score)
+        scored_candidates.sort(key=lambda x: (x[1].match_priority, -x[0]))
 
         if not scored_candidates:
             # Unresolved match
@@ -269,6 +288,18 @@ class MatchingEngine:
                 ),
                 alternatives=[]
             )
+
+        # Ambiguity check between strong candidates
+        if len(scored_candidates) > 1:
+            best_score, best_cand_dto, best_conf, best_prod = scored_candidates[0]
+            second_score, second_cand_dto, second_conf, second_prod = scored_candidates[1]
+            best_conf = ConfidenceScorer.check_ambiguity(
+                best_cand=best_cand_dto,
+                best_conf=best_conf,
+                second_cand=second_cand_dto,
+                second_conf=second_conf
+            )
+            scored_candidates[0] = (best_score, best_cand_dto, best_conf, best_prod)
 
         # Best candidate
         best_score, best_cand_dto, best_conf, best_prod = scored_candidates[0]
@@ -311,7 +342,8 @@ class MatchingEngine:
         confirmed_count: int = 0,
         corrected_count: int = 0
     ) -> None:
-        ev = MatchEvidence(evidence_type=evidence_type, score=score, detail=detail)
+        priority = EVIDENCE_TYPE_PRIORITY.get(evidence_type, MatchPriority.UNKNOWN)
+        ev = MatchEvidence(evidence_type=evidence_type, score=score, detail=detail, priority=priority)
         if prod.id not in candidate_map:
             candidate_map[prod.id] = {
                 "product": prod,
@@ -325,3 +357,4 @@ class MatchingEngine:
                 candidate_map[prod.id]["confirmed_count"] = confirmed_count
             if corrected_count > candidate_map[prod.id]["corrected_count"]:
                 candidate_map[prod.id]["corrected_count"] = corrected_count
+

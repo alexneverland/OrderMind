@@ -1,10 +1,18 @@
 from typing import List, Optional, Dict, Any
-from backend.app.schemas.matching import ConfidenceResult, MatchDecision, MatchEvidence
+from backend.app.schemas.matching import (
+    ConfidenceResult,
+    MatchDecision,
+    MatchEvidence,
+    MatchCandidateDto,
+    MatchPriority
+)
 
 
 # Centralized Scoring Constants & Decision Thresholds
 AUTO_ACCEPT_THRESHOLD = 0.95
 NEEDS_REVIEW_THRESHOLD = 0.70
+AMBIGUITY_SCORE_MARGIN = 0.05
+
 
 # Base match weights (derived from strongest primary candidate evidence)
 BASE_WEIGHT_EXACT_SKU = 0.98
@@ -127,3 +135,48 @@ class ConfidenceScorer:
             decision=decision,
             reasons=reasons
         )
+
+    @staticmethod
+    def check_ambiguity(
+        best_cand: MatchCandidateDto,
+        best_conf: ConfidenceResult,
+        second_cand: Optional[MatchCandidateDto] = None,
+        second_conf: Optional[ConfidenceResult] = None,
+        ambiguity_margin: float = AMBIGUITY_SCORE_MARGIN,
+    ) -> ConfidenceResult:
+        """
+        Ambiguity protection between strong candidates:
+        - If two or more distinct products have very close scores (score gap <= margin)
+          and both are above meaningful confidence (NEEDS_REVIEW_THRESHOLD).
+        - Or if duplicate deterministic evidence exists (same high-tier priority <= EXACT_NORMALIZED_DESCRIPTION).
+        Then auto_accept is downgraded to needs_review with explainable reason.
+        """
+        if not second_cand or not second_conf:
+            return best_conf
+
+        if best_cand.product_id == second_cand.product_id:
+            return best_conf
+
+        # 1. Deterministic duplicate evidence check
+        is_deterministic_duplicate = (
+            best_cand.match_priority == second_cand.match_priority
+            and best_cand.match_priority <= MatchPriority.EXACT_NORMALIZED_DESCRIPTION
+        )
+
+        # 2. Score gap check between strong candidates
+        is_score_gap_ambiguous = (
+            best_conf.score >= NEEDS_REVIEW_THRESHOLD
+            and second_conf.score >= NEEDS_REVIEW_THRESHOLD
+            and abs(best_conf.score - second_conf.score) <= ambiguity_margin
+        )
+
+        if is_deterministic_duplicate or is_score_gap_ambiguous:
+            if best_conf.decision == MatchDecision.AUTO_ACCEPT:
+                best_conf.decision = MatchDecision.NEEDS_REVIEW
+
+            ambiguity_reason = "Multiple strong product candidates detected; manual review required."
+            if ambiguity_reason not in best_conf.reasons:
+                best_conf.reasons.append(ambiguity_reason)
+
+        return best_conf
+

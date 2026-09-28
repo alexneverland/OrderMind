@@ -17,7 +17,8 @@ from backend.app.schemas.matching import (
 )
 from backend.app.services.order_parsing_service import OrderParsingService
 from backend.app.services.matching_engine import MatchingEngine
-from backend.app.services.learning_memory_service import LearningMemoryService
+from backend.app.services.learning_memory_service import LearningMemoryService, AliasConflictError
+
 
 logger = logging.getLogger("ordermind.orders_api")
 router = APIRouter(prefix="/orders", tags=["Orders"])
@@ -173,11 +174,12 @@ def confirm_line_match_endpoint(
             confirmed_count=alias.confirmed_count,
             corrected_count=alias.corrected_count
         )
-    except ValueError as ve:
+    except (AliasConflictError, ValueError) as ve:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(ve)
         )
+
     except Exception as e:
         logger.exception("Unexpected server error during match confirmation: %s", str(e))
         raise HTTPException(

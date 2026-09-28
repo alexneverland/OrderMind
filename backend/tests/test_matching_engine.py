@@ -344,3 +344,189 @@ def test_company_isolation_between_different_companies(db_session):
     )
     assert res2.best_match.product_id == p_comp2.id
     assert res2.best_match.description == "Comp2 Item"
+
+
+def test_match_priority_customer_alias_beats_global_alias(db_session):
+    """
+    Customer Alias: 'κοκκινο' -> Product A (confirmed_count = 1, conf = 0.90, priority = 3)
+    Global Alias: 'κοκκινο' -> Product B (conf = 0.92, priority = 4)
+    Expected:
+    - best_match = Product A (Customer-specific knowledge wins priority!)
+    - decision = needs_review (because 1 confirmation -> 0.90)
+    - Product B is an alternative (not best_match!)
+    """
+    comp = Company(name="Priority Corp")
+    db_session.add(comp)
+    db_session.flush()
+
+    cust = Customer(company_id=comp.id, customer_code="CUST-P", customer_name="Priority Customer")
+    db_session.add(cust)
+    db_session.flush()
+
+    prod_a = Product(company_id=comp.id, sku="PROD-A", description="Product A Alpha", active=True)
+    prod_b = Product(company_id=comp.id, sku="PROD-B", description="Product B Beta", active=True)
+    db_session.add_all([prod_a, prod_b])
+    db_session.flush()
+
+    # Customer Alias pointing to Product A
+    cust_alias = CustomerProductAlias(
+        customer_id=cust.id,
+        product_id=prod_a.id,
+        original_phrase="κοκκινο",
+        normalized_phrase="κοκκινο",
+        confirmed_count=1,
+        active=True
+    )
+    # Global Alias pointing to Product B
+    glob_alias = ProductAlias(
+        company_id=comp.id,
+        product_id=prod_b.id,
+        original_phrase="κοκκινο",
+        normalized_phrase="κοκκινο",
+        active=True
+    )
+    db_session.add_all([cust_alias, glob_alias])
+    db_session.commit()
+
+    res = MatchingEngine.match_line(
+        db=db_session,
+        company_id=comp.id,
+        customer_id=cust.id,
+        line_number=1,
+        original_text="κοκκινο",
+        product_phrase="κοκκινο",
+        quantity=1.0,
+        unit="piece"
+    )
+
+    # Product A must win despite lower confidence score (0.90 vs 0.92)
+    assert res.best_match is not None
+    assert res.best_match.product_id == prod_a.id
+    assert res.best_match.sku == "PROD-A"
+    assert res.confidence.decision == MatchDecision.NEEDS_REVIEW
+    assert res.confidence.score == 0.90
+
+    # Product B should be in alternatives
+    assert len(res.alternatives) >= 1
+    assert res.alternatives[0].product_id == prod_b.id
+    assert res.alternatives[0].sku == "PROD-B"
+
+
+def test_match_priority_customer_alias_beats_exact_description(db_session):
+    """
+    Customer Alias: 'μπλε' -> Product A (priority = 3, conf = 0.90)
+    Product B description: 'μπλε' (priority = 5, conf = 0.96)
+    Expected:
+    - Customer-specific alias wins product selection priority!
+    """
+    comp = Company(name="Color Corp")
+    db_session.add(comp)
+    db_session.flush()
+
+    cust = Customer(company_id=comp.id, customer_code="CUST-COLOR", customer_name="Color Deli")
+    db_session.add(cust)
+    db_session.flush()
+
+    prod_a = Product(company_id=comp.id, sku="SKU-AAA", description="Special Blend A", active=True)
+    prod_b = Product(company_id=comp.id, sku="SKU-BBB", description="μπλε", active=True)
+    db_session.add_all([prod_a, prod_b])
+    db_session.flush()
+
+    cust_alias = CustomerProductAlias(
+        customer_id=cust.id,
+        product_id=prod_a.id,
+        original_phrase="μπλε",
+        normalized_phrase="μπλε",
+        confirmed_count=1,
+        active=True
+    )
+    db_session.add(cust_alias)
+    db_session.commit()
+
+    res = MatchingEngine.match_line(
+        db=db_session,
+        company_id=comp.id,
+        customer_id=cust.id,
+        line_number=1,
+        original_text="μπλε",
+        product_phrase="μπλε",
+        quantity=1.0,
+        unit="piece"
+    )
+
+    # Customer-specific alias wins over exact description
+    assert res.best_match.product_id == prod_a.id
+    assert res.best_match.sku == "SKU-AAA"
+    assert res.alternatives[0].product_id == prod_b.id
+
+
+def test_ambiguity_protection_between_close_strong_candidates(db_session):
+    """
+    Two distinct strong candidates with score difference <= AMBIGUITY_SCORE_MARGIN (0.05).
+    Example: Product 1 has SKU '9000' (score 0.98), Product 2 has Barcode '9000' (score 0.98).
+    Decision must be needs_review with ambiguity reason.
+    """
+    comp = Company(name="Ambiguity Corp")
+    db_session.add(comp)
+    db_session.flush()
+
+    cust = Customer(company_id=comp.id, customer_code="CUST-AMB", customer_name="Ambiguity Customer")
+    db_session.add(cust)
+    db_session.flush()
+
+    prod1 = Product(company_id=comp.id, sku="9000", description="Item with SKU 9000", active=True)
+    prod2 = Product(company_id=comp.id, sku="DIFF-SKU", barcode="9000", description="Item with Barcode 9000", active=True)
+    db_session.add_all([prod1, prod2])
+    db_session.commit()
+
+    res = MatchingEngine.match_line(
+        db=db_session,
+        company_id=comp.id,
+        customer_id=cust.id,
+        line_number=1,
+        original_text="9000",
+        product_phrase="9000",
+        quantity=1.0,
+        unit="piece"
+    )
+
+    assert res.best_match is not None
+    # Both are strong (0.98 vs 0.98) -> ambiguity protection triggers
+    assert res.confidence.decision == MatchDecision.NEEDS_REVIEW
+    assert "Multiple strong product candidates detected; manual review required." in res.confidence.reasons
+
+
+def test_duplicate_deterministic_evidence_prevents_silent_auto_accept(db_session):
+    """
+    Two active products in the same company have the exact same barcode.
+    Candidate generation finds both at Priority 2.
+    Must NOT silently auto-accept; requires operator review!
+    """
+    comp = Company(name="Barcode Corp")
+    db_session.add(comp)
+    db_session.flush()
+
+    cust = Customer(company_id=comp.id, customer_code="CUST-BC", customer_name="Barcode Customer")
+    db_session.add(cust)
+    db_session.flush()
+
+    prod1 = Product(company_id=comp.id, sku="ITEM-1", barcode="5207777777777", description="Product 1", active=True)
+    prod2 = Product(company_id=comp.id, sku="ITEM-2", barcode="5207777777777", description="Product 2", active=True)
+    db_session.add_all([prod1, prod2])
+    db_session.commit()
+
+    res = MatchingEngine.match_line(
+        db=db_session,
+        company_id=comp.id,
+        customer_id=cust.id,
+        line_number=1,
+        original_text="5207777777777",
+        product_phrase="5207777777777",
+        quantity=1.0,
+        unit="piece"
+    )
+
+    assert res.best_match is not None
+    assert res.confidence.decision == MatchDecision.NEEDS_REVIEW
+    assert "Multiple strong product candidates detected; manual review required." in res.confidence.reasons
+
