@@ -176,6 +176,90 @@ def is_grounded_in_input(fragment: str, raw_input: str) -> bool:
     return (matched_tokens / len(frag_tokens)) >= 0.8
 
 
+def extract_numbers_from_text(text: str) -> List[float]:
+    """Extracts numeric values from digit sequences and common number words."""
+    if not text:
+        return []
+    norm = normalize_text(text)
+    numbers = []
+
+    matches = re.findall(r"\b\d+(?:[.,]\d+)?\b", text)
+    for m in matches:
+        try:
+            numbers.append(float(m.replace(",", ".")))
+        except ValueError:
+            pass
+
+    word_map = {
+        "ενα": 1.0, "ενας": 1.0, "μια": 1.0, "δυο": 2.0, "τρια": 3.0, "τρεις": 3.0,
+        "τεσσερα": 4.0, "τεσσερις": 4.0, "πεντε": 5.0, "εξι": 6.0, "επτα": 7.0,
+        "οκτω": 8.0, "εννεα": 9.0, "δεκα": 10.0, "μισο": 0.5, "μισος": 0.5,
+        "one": 1.0, "two": 2.0, "three": 3.0, "four": 4.0, "five": 5.0,
+        "six": 6.0, "seven": 7.0, "eight": 8.0, "nine": 9.0, "ten": 10.0
+    }
+    for token in norm.split():
+        if token in word_map:
+            numbers.append(word_map[token])
+
+    return numbers
+
+
+def is_quantity_grounded_in_span(quantity: float, text_span: str, raw_input: str) -> bool:
+    """
+    Verifies that the extracted numerical quantity is grounded in the text span or input.
+    - If the text span contains explicit digits/numbers: the extracted quantity must match one of them.
+    - If no numbers are present in the text span: a quantity of 1.0 (default implicit quantity) is acceptable.
+    - If provider hallucinated an arbitrary quantity (e.g. text has '2' but provider returns 20): returns False.
+    """
+    span_numbers = extract_numbers_from_text(text_span)
+    if span_numbers:
+        return any(abs(quantity - n) < 1e-4 for n in span_numbers)
+
+    input_numbers = extract_numbers_from_text(raw_input)
+    if any(abs(quantity - n) < 1e-4 for n in input_numbers):
+        return True
+
+    if not span_numbers and quantity == 1.0:
+        return True
+
+    return False
+
+
+def is_unit_grounded_in_span(
+    unit: str,
+    raw_unit: Optional[str],
+    unit_explicit: bool,
+    text_span: str,
+    raw_input: str
+) -> bool:
+    """
+    Verifies that an extracted unit is grounded in the customer's text.
+    - If unit_explicit is True:
+      - raw_unit must appear in the text_span or raw_input.
+      - If input specifies a conflicting unit (e.g. 'cases' while extracted is 'kg'), it is rejected.
+    - If unit_explicit is False:
+      - Valid default when customer didn't specify a unit.
+    """
+    if not unit_explicit:
+        return True
+
+    if not raw_unit or not raw_unit.strip():
+        return False
+
+    norm_raw_unit = normalize_text(raw_unit)
+    norm_span = normalize_text(text_span)
+    norm_input = normalize_text(raw_input)
+
+    if norm_raw_unit in norm_span or norm_raw_unit in norm_input:
+        return True
+
+    unit_norm = normalize_text(unit)
+    if unit_norm in norm_span or unit_norm in norm_input:
+        return True
+
+    return False
+
+
 GREEK_STEM_ENDINGS = [
     normalize_text(e)
     for e in ['ια', 'ες', 'οι', 'ου', 'ων', 'ους', 'ας', 'ης', 'ος', 'α', 'ο', 'η', 'ι', 'ε', 'υ']

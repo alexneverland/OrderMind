@@ -13,7 +13,11 @@ from backend.app.schemas.order import (
     NormalizedOrderLine,
     NormalizedOrderLineDraft
 )
-from backend.app.core.text_normalizer import is_grounded_in_input
+from backend.app.core.text_normalizer import (
+    is_grounded_in_input,
+    is_quantity_grounded_in_span,
+    is_unit_grounded_in_span,
+)
 
 logger = logging.getLogger("ordermind.parsing")
 
@@ -82,6 +86,18 @@ class OrderParsingService:
                 ):
                     raise ValueError(
                         f"Extracted item '{draft.original_text}' cannot be grounded in customer input (hallucination detected)."
+                    )
+
+                # Quantity grounding check
+                if not is_quantity_grounded_in_span(draft.quantity, draft.original_text, normalized_input.raw_text):
+                    raise ValueError(
+                        f"Extracted quantity {draft.quantity} for item '{draft.original_text}' cannot be grounded in customer input (contradictory extraction)."
+                    )
+
+                # Unit grounding check
+                if not is_unit_grounded_in_span(draft.unit, draft.raw_unit, draft.unit_explicit, draft.original_text, normalized_input.raw_text):
+                    raise ValueError(
+                        f"Extracted unit '{draft.unit}' for item '{draft.original_text}' cannot be grounded in customer input (contradictory extraction)."
                     )
 
                 order_lines.append(NormalizedOrderLine(

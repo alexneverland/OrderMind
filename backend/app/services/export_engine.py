@@ -3,12 +3,13 @@ import io
 import csv
 import json
 import re
+import hashlib
 from datetime import datetime, timezone
 import openpyxl
 from sqlalchemy.orm import Session
 
 from backend.app.models.order import Order
-from backend.app.models.export import ExportProfile
+from backend.app.models.export import ExportProfile, ExportRecord
 from backend.app.schemas.workflow import OrderStatus
 from backend.app.schemas.export import MappingType
 from backend.app.services.export_registry import (
@@ -67,9 +68,15 @@ class ExportEngine:
         if not mappings:
             raise OrderExportError(f"Export profile '{profile.name}' has no column mappings defined.")
 
+        fmt = profile.format.lower().strip()
+        is_spreadsheet = fmt in ("excel", "xlsx", "csv")
+
         # Build data rows & headers
-        # Output headers are sanitized against formula injection (CWE-1236) without mutating DB mappings
-        headers = [sanitize_formula_injection(m.output_column_name) for m in mappings]
+        # Output headers are sanitized against formula injection (CWE-1236) only for spreadsheet formats
+        headers = [
+            sanitize_formula_injection(m.output_column_name) if is_spreadsheet else m.output_column_name
+            for m in mappings
+        ]
         data_rows: List[List[Any]] = []
 
         # Sort lines by line_number for deterministic output
@@ -79,13 +86,12 @@ class ExportEngine:
             row: List[Any] = []
             for m in mappings:
                 if m.mapping_type == MappingType.CONSTANT.value:
-                    val = sanitize_formula_injection(m.constant_value)
+                    val = sanitize_formula_injection(m.constant_value) if is_spreadsheet else m.constant_value
                 else:
-                    val = extract_source_field_value(m.source_field, order, line)
+                    val = extract_source_field_value(m.source_field, order, line, sanitize=is_spreadsheet)
                 row.append(val)
             data_rows.append(row)
 
-        fmt = profile.format.lower().strip()
         slug = re.sub(r"[^a-zA-Z0-9_\-]", "_", profile.name.lower()).strip("_")
         now_date = datetime.now(timezone.utc).strftime("%Y%m%d")
 
@@ -135,8 +141,18 @@ class ExportEngine:
         else:
             raise OrderExportError(f"Unsupported format '{profile.format}'.")
 
-        # Update order audit metadata on final export
+        # Update order audit metadata and write export record on final export
         if not preview:
+            content_hash = hashlib.sha256(file_bytes).hexdigest()
+            export_record = ExportRecord(
+                order_id=order.id,
+                export_profile_id=profile.id,
+                format=fmt,
+                filename=filename,
+                content_hash=content_hash,
+                created_at=datetime.now(timezone.utc)
+            )
+            db.add(export_record)
             order.exported_at = datetime.now(timezone.utc)
             order.status = OrderStatus.EXPORTED.value
             order.last_export_profile_id = profile.id

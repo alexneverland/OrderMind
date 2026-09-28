@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     GOOGLE_CLOUD_PROJECT: Optional[str] = None
     GOOGLE_CLOUD_LOCATION: Optional[str] = "us-central1"
 
+    # Input validation limits
+    MAX_RAW_ORDER_TEXT_SIZE: int = Field(default=50000, description="Max raw text size in characters")
+    MAX_ORDER_LINES: int = Field(default=500, description="Max lines allowed per order")
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

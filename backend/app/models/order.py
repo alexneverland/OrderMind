@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, Text, DateTime, ForeignKey, JSON, Boolean, func, UniqueConstraint
+from sqlalchemy import Column, Integer, String, Float, Text, DateTime, ForeignKey, JSON, Boolean, func, UniqueConstraint, ForeignKeyConstraint
 from sqlalchemy.orm import relationship
 from backend.app.core.database import Base
 
@@ -24,16 +24,21 @@ class Order(Base):
     __tablename__ = "orders"
     __table_args__ = (
         UniqueConstraint("company_id", "order_number", name="uq_company_order_number"),
+        UniqueConstraint("company_id", "idempotency_key", name="uq_company_idempotency_key"),
+        ForeignKeyConstraint(["customer_id", "company_id"], ["customers.id", "customers.company_id"], ondelete="RESTRICT", name="fk_order_customer_company"),
     )
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     company_id = Column(Integer, ForeignKey("companies.id", ondelete="CASCADE"), nullable=False, index=True)
-    customer_id = Column(Integer, ForeignKey("customers.id", ondelete="RESTRICT"), nullable=False, index=True)
+    customer_id = Column(Integer, nullable=False, index=True)
     order_source_id = Column(Integer, ForeignKey("order_sources.id", ondelete="SET NULL"), nullable=True, index=True)
     order_number = Column(String(100), nullable=False, index=True)
+    idempotency_key = Column(String(100), nullable=True, index=True)
+    version = Column(Integer, default=1, nullable=False)  # Optimistic concurrency version
     status = Column(String(50), nullable=False, default="pending_review")  # draft, processing, pending_review, approved, exported, cancelled
     overall_confidence = Column(Float, default=0.0, nullable=False)
     raw_input = Column(Text, nullable=False)
+    approved_snapshot = Column(JSON, nullable=True)  # Deterministic immutable snapshot at approval time
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     confirmed_at = Column(DateTime(timezone=True), nullable=True)
     approved_at = Column(DateTime(timezone=True), nullable=True)
@@ -41,12 +46,18 @@ class Order(Base):
     last_export_profile_id = Column(Integer, ForeignKey("export_profiles.id", ondelete="SET NULL"), nullable=True)
 
     # Relationships
-    company = relationship("Company", back_populates="orders")
-    customer = relationship("Customer", back_populates="orders")
+    company = relationship("Company", back_populates="orders", overlaps="customer,orders")
+    customer = relationship(
+        "Customer",
+        back_populates="orders",
+        primaryjoin="and_(Customer.id==Order.customer_id, Customer.company_id==Order.company_id)",
+        overlaps="company,orders"
+    )
     order_source = relationship("OrderSource", back_populates="orders")
     lines = relationship("OrderLine", back_populates="order", cascade="all, delete-orphan", order_by="OrderLine.line_number")
     corrections = relationship("HumanCorrection", back_populates="order")
     last_export_profile = relationship("ExportProfile")
+    export_records = relationship("ExportRecord", back_populates="order", cascade="all, delete-orphan", order_by="desc(ExportRecord.created_at)")
 
 
 class OrderLine(Base):

@@ -24,6 +24,7 @@ class ExportProfileService:
 
     SUPPORTED_FORMATS = {"excel", "xlsx", "csv", "json"}
     SUPPORTED_DELIMITERS = {",", ";", "\t", "|"}
+    SUPPORTED_ENCODINGS = {"utf-8", "utf-8-sig", "windows-1253", "iso-8859-7", "latin1", "ascii"}
 
     @classmethod
     def validate_profile_mappings(cls, mappings) -> None:
@@ -31,9 +32,15 @@ class ExportProfileService:
             raise ExportProfileValidationError("Export profile must define at least one column mapping.")
 
         seen_orders = set()
+        seen_col_names = set()
         for idx, m in enumerate(mappings):
             if not m.output_column_name or not m.output_column_name.strip():
                 raise ExportProfileValidationError(f"Mapping #{idx+1} has an empty output column name.")
+
+            col_name_norm = m.output_column_name.strip().lower()
+            if col_name_norm in seen_col_names:
+                raise ExportProfileValidationError(f"Duplicate output_column_name '{m.output_column_name.strip()}' in export profile.")
+            seen_col_names.add(col_name_norm)
 
             if m.column_order in seen_orders:
                 raise ExportProfileValidationError(f"Duplicate column_order '{m.column_order}' in export profile.")
@@ -68,6 +75,10 @@ class ExportProfileService:
         if fmt == "csv" and payload.delimiter not in cls.SUPPORTED_DELIMITERS:
             raise ExportProfileValidationError(f"Unsupported CSV delimiter '{payload.delimiter}'. Supported: {cls.SUPPORTED_DELIMITERS}")
 
+        enc = (payload.encoding or "utf-8-sig").lower().strip()
+        if enc not in cls.SUPPORTED_ENCODINGS:
+            raise ExportProfileValidationError(f"Unsupported encoding '{payload.encoding}'. Supported: {sorted(list(cls.SUPPORTED_ENCODINGS))}")
+
         cls.validate_profile_mappings(payload.mappings)
 
         profile = ExportProfile(
@@ -76,7 +87,7 @@ class ExportProfileService:
             format=fmt,
             delimiter=payload.delimiter,
             include_header=payload.include_header,
-            encoding=payload.encoding or "utf-8-sig"
+            encoding=enc
         )
         db.add(profile)
         db.flush()
@@ -133,7 +144,10 @@ class ExportProfileService:
             profile.include_header = payload.include_header
 
         if payload.encoding is not None:
-            profile.encoding = payload.encoding
+            enc = payload.encoding.lower().strip()
+            if enc not in cls.SUPPORTED_ENCODINGS:
+                raise ExportProfileValidationError(f"Unsupported encoding '{payload.encoding}'. Supported: {sorted(list(cls.SUPPORTED_ENCODINGS))}")
+            profile.encoding = enc
 
         if payload.mappings is not None:
             cls.validate_profile_mappings(payload.mappings)

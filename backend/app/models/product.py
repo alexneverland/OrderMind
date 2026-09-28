@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, Float, DateTime, ForeignKey, UniqueConstraint, Index, func
+from sqlalchemy import Column, Integer, String, Boolean, Float, DateTime, ForeignKey, UniqueConstraint, ForeignKeyConstraint, Index, func
 from sqlalchemy.orm import relationship
 from backend.app.core.database import Base
 
@@ -17,12 +17,19 @@ class Product(Base):
 
     __table_args__ = (
         UniqueConstraint("company_id", "sku", name="uq_company_product_sku"),
+        UniqueConstraint("id", "company_id", name="uq_products_id_company_id"),
     )
 
     # Relationships
     company = relationship("Company", back_populates="products")
     packagings = relationship("Packaging", back_populates="product", cascade="all, delete-orphan")
-    global_aliases = relationship("ProductAlias", back_populates="product", cascade="all, delete-orphan")
+    global_aliases = relationship(
+        "ProductAlias",
+        back_populates="product",
+        cascade="all, delete-orphan",
+        primaryjoin="and_(Product.id==ProductAlias.product_id, Product.company_id==ProductAlias.company_id)",
+        overlaps="company,global_aliases"
+    )
     customer_aliases = relationship("CustomerProductAlias", back_populates="product", cascade="all, delete-orphan")
 
 
@@ -32,7 +39,7 @@ class ProductAlias(Base):
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     company_id = Column(Integer, ForeignKey("companies.id", ondelete="CASCADE"), nullable=False, index=True)
-    product_id = Column(Integer, ForeignKey("products.id", ondelete="CASCADE"), nullable=False, index=True)
+    product_id = Column(Integer, nullable=False, index=True)
     original_phrase = Column(String(255), nullable=False)
     normalized_phrase = Column(String(255), nullable=False, index=True)
     active = Column(Boolean, default=True, nullable=False)
@@ -41,11 +48,17 @@ class ProductAlias(Base):
     __table_args__ = (
         UniqueConstraint("company_id", "product_id", "normalized_phrase", name="uq_company_product_global_alias"),
         Index("ix_product_alias_lookup", "company_id", "normalized_phrase"),
+        ForeignKeyConstraint(["product_id", "company_id"], ["products.id", "products.company_id"], ondelete="CASCADE", name="fk_product_alias_product_company"),
     )
 
     # Relationships
-    company = relationship("Company", back_populates="global_aliases")
-    product = relationship("Product", back_populates="global_aliases")
+    company = relationship("Company", back_populates="global_aliases", overlaps="global_aliases,product")
+    product = relationship(
+        "Product",
+        back_populates="global_aliases",
+        primaryjoin="and_(Product.id==ProductAlias.product_id, Product.company_id==ProductAlias.company_id)",
+        overlaps="company,global_aliases"
+    )
 
 
 class Packaging(Base):

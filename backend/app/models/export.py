@@ -33,3 +33,20 @@ class ExportFieldMapping(Base):
 
     # Relationships
     export_profile = relationship("ExportProfile", back_populates="field_mappings")
+
+
+class ExportRecord(Base):
+    """Audit record for every generated order export file."""
+    __tablename__ = "export_records"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    order_id = Column(Integer, ForeignKey("orders.id", ondelete="CASCADE"), nullable=False, index=True)
+    export_profile_id = Column(Integer, ForeignKey("export_profiles.id", ondelete="SET NULL"), nullable=True, index=True)
+    format = Column(String(50), nullable=False)
+    filename = Column(String(255), nullable=False)
+    content_hash = Column(String(64), nullable=True)  # SHA-256 of generated file content
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    # Relationships
+    order = relationship("Order", back_populates="export_records")
+    export_profile = relationship("ExportProfile")

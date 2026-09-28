@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field, ConfigDict
-from typing import List, Optional
+from typing import List, Optional, Any
 from datetime import datetime
 from enum import Enum
 
@@ -92,10 +92,12 @@ class CreateOrderFromMatchRequest(BaseModel):
     company_id: int
     customer_id: int
     order_number: Optional[str] = None
+    idempotency_key: Optional[str] = None
     source_type: str = "plain_text"
     text: Optional[str] = None
     raw_input: Optional[str] = None
-    lines: Optional[List[LineMatchResult]] = None
+    items: Optional[List[Any]] = None
+    lines: Optional[List[Any]] = None
 
 
 class CanonicalOrderItem(BaseModel):

@@ -1,6 +1,6 @@
 from typing import List, Optional, Dict, Tuple
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import select
+from sqlalchemy import select, or_
 from rapidfuzz import fuzz
 
 from backend.app.models.product import Product, ProductAlias, Packaging
@@ -99,9 +99,12 @@ class MatchingEngine:
                     detail=f"Exact barcode match '{prod.barcode}'"
                 )
 
-        # 3. Customer-Specific Alias Match (Isolated to customer_id)
-        cust_aliases_list = []
+        # 3. Customer-Specific Alias Match (Isolated to customer_id via index)
         if norm_phrase:
+            cust_alias_filters = [CustomerProductAlias.normalized_phrase == norm_phrase]
+            if stem_phrase_str and len(stem_phrase_str) >= 3:
+                cust_alias_filters.append(CustomerProductAlias.normalized_phrase.like(f"{stem_phrase_str}%"))
+
             cust_alias_stmt = (
                 select(CustomerProductAlias, Product)
                 .join(Product, CustomerProductAlias.product_id == Product.id)
@@ -110,7 +113,8 @@ class MatchingEngine:
                     CustomerProductAlias.customer_id == customer_id,
                     CustomerProductAlias.active.is_(True),
                     Product.company_id == company_id,
-                    Product.active.is_(True)
+                    Product.active.is_(True),
+                    or_(*cust_alias_filters) if len(cust_alias_filters) > 1 else cust_alias_filters[0]
                 )
             )
             cust_aliases_list = db.execute(cust_alias_stmt).unique().all()
@@ -134,9 +138,12 @@ class MatchingEngine:
                         corrected_count=alias_row.corrected_count
                     )
 
-        # 4. Global ProductAlias Match (Isolated to company_id)
-        global_aliases_list = []
+        # 4. Global ProductAlias Match (Isolated to company_id via index)
         if norm_phrase:
+            global_alias_filters = [ProductAlias.normalized_phrase == norm_phrase]
+            if stem_phrase_str and len(stem_phrase_str) >= 3:
+                global_alias_filters.append(ProductAlias.normalized_phrase.like(f"{stem_phrase_str}%"))
+
             global_alias_stmt = (
                 select(ProductAlias, Product)
                 .join(Product, ProductAlias.product_id == Product.id)
@@ -144,7 +151,8 @@ class MatchingEngine:
                 .where(
                     ProductAlias.company_id == company_id,
                     ProductAlias.active.is_(True),
-                    Product.active.is_(True)
+                    Product.active.is_(True),
+                    or_(*global_alias_filters) if len(global_alias_filters) > 1 else global_alias_filters[0]
                 )
             )
             global_aliases_list = db.execute(global_alias_stmt).unique().all()
@@ -191,7 +199,6 @@ class MatchingEngine:
 
         # 6. Fuzzy Description / Alias Matching via RapidFuzz (Fallback if no exact match found)
         if not candidate_map and norm_phrase:
-            # Check products
             for prod in all_active_products:
                 prod_norm_desc = normalize_text(prod.description)
                 token_ratio = fuzz.token_set_ratio(norm_phrase, prod_norm_desc)
@@ -206,7 +213,17 @@ class MatchingEngine:
                     )
 
             # Also check aliases fuzzy if needed
-            for g_alias, prod in global_aliases_list:
+            fuzzy_alias_stmt = (
+                select(ProductAlias, Product)
+                .join(Product, ProductAlias.product_id == Product.id)
+                .options(joinedload(Product.packagings))
+                .where(
+                    ProductAlias.company_id == company_id,
+                    ProductAlias.active.is_(True),
+                    Product.active.is_(True)
+                )
+            )
+            for g_alias, prod in db.execute(fuzzy_alias_stmt).unique().all():
                 g_alias_norm = g_alias.normalized_phrase
                 g_fuzzy = fuzz.token_set_ratio(norm_phrase, g_alias_norm)
                 if g_fuzzy >= 50:

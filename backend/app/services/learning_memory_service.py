@@ -89,7 +89,8 @@ class LearningMemoryService:
         product_id: int,
         original_phrase: str,
         order_id: Optional[int] = None,
-        line_id: Optional[int] = None
+        line_id: Optional[int] = None,
+        commit: bool = True
     ) -> CustomerProductAlias:
         """
         Confirms a match for a customer:
@@ -142,13 +143,17 @@ class LearningMemoryService:
             )
             db.add(alias)
 
-        try:
-            db.commit()
-            db.refresh(alias)
+        if commit:
+            try:
+                db.commit()
+                db.refresh(alias)
+                return alias
+            except Exception:
+                db.rollback()
+                raise
+        else:
+            db.flush()
             return alias
-        except Exception:
-            db.rollback()
-            raise
 
     @classmethod
     def correct_match(
@@ -160,7 +165,8 @@ class LearningMemoryService:
         suggested_product_id: Optional[int] = None,
         order_id: Optional[int] = None,
         line_id: Optional[int] = None,
-        notes: Optional[str] = None
+        notes: Optional[str] = None,
+        commit: bool = True
     ) -> Tuple[HumanCorrection, CustomerProductAlias]:
         """
         Atomically records an operator correction:
@@ -241,11 +247,16 @@ class LearningMemoryService:
                 )
                 db.add(alias)
 
-            db.commit()
-            db.refresh(correction)
-            db.refresh(alias)
-            return correction, alias
+            if commit:
+                db.commit()
+                db.refresh(correction)
+                db.refresh(alias)
+                return correction, alias
+            else:
+                db.flush()
+                return correction, alias
         except Exception:
-            db.rollback()
+            if commit:
+                db.rollback()
             raise
 

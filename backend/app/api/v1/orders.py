@@ -1,11 +1,13 @@
 import logging
-from typing import Optional, List
-from fastapi import APIRouter, Depends, HTTPException, status, Query, Response
+from typing import Optional, List, Any
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Response, Header
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 
+from backend.app.config import settings
 from backend.app.core.database import get_db
-from backend.app.models.order import Order
+from backend.app.core.text_normalizer import normalize_text
+from backend.app.models.order import Order, OrderLine
 from backend.app.models.memory import CustomerProductAlias
 from backend.app.schemas.order import OrderParseRequest, OrderParseResponse
 from backend.app.schemas.matching import (
@@ -163,19 +165,82 @@ async def match_order_endpoint(
 @router.post("/create-from-match", response_model=OrderResponse, status_code=status.HTTP_201_CREATED)
 async def create_order_from_match_endpoint(
     payload: CreateOrderFromMatchRequest,
+    idempotency_key_header: Optional[str] = Header(None, alias="Idempotency-Key"),
     db: Session = Depends(get_db)
 ):
     """
     Persists matched lines into a real Order record with line records.
-    If lines are not supplied, parses and matches the text input first.
+    Server strictly owns match computation and scoring: client-supplied candidate matches
+    and decisions are ignored and recomputed server-side.
     """
     try:
-        raw_input = payload.raw_input or payload.text or ""
-        lines = payload.lines
+        eff_idempotency_key = idempotency_key_header or payload.idempotency_key
+        if eff_idempotency_key:
+            eff_idempotency_key = eff_idempotency_key.strip()
+            existing_stmt = select(Order).where(
+                Order.company_id == payload.company_id,
+                Order.idempotency_key == eff_idempotency_key
+            )
+            existing_order = db.execute(existing_stmt).scalars().first()
+            if existing_order:
+                return existing_order
 
-        if not lines:
+        raw_input = payload.raw_input or payload.text or ""
+        if len(raw_input) > settings.MAX_RAW_ORDER_TEXT_SIZE:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=f"Order text exceeds maximum allowed size of {settings.MAX_RAW_ORDER_TEXT_SIZE} characters."
+            )
+
+        raw_items = payload.lines or payload.items
+        extracted_lines = []
+
+        if raw_items:
+            if len(raw_items) > settings.MAX_ORDER_LINES:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Order lines exceed maximum limit of {settings.MAX_ORDER_LINES} lines."
+                )
+
+            for idx, it in enumerate(raw_items):
+                if isinstance(it, dict):
+                    line_no = it.get("line_number", idx + 1)
+                    orig_text = it.get("original_text", "")
+                    phrase = it.get("product_phrase", orig_text)
+                    qty = it.get("quantity") if it.get("quantity") is not None else (it.get("requested_quantity") or 1.0)
+                    unit = it.get("unit") if it.get("unit") is not None else (it.get("requested_unit") or "piece")
+                    raw_unit = it.get("raw_unit")
+                    unit_explicit = it.get("unit_explicit", False)
+                else:
+                    line_no = getattr(it, "line_number", idx + 1)
+                    orig_text = getattr(it, "original_text", "")
+                    phrase = getattr(it, "product_phrase", orig_text)
+                    qty = getattr(it, "quantity", None)
+                    if qty is None:
+                        qty = getattr(it, "requested_quantity", 1.0)
+                    unit = getattr(it, "unit", None)
+                    if unit is None:
+                        unit = getattr(it, "requested_unit", "piece")
+                    raw_unit = getattr(it, "raw_unit", None)
+                    unit_explicit = getattr(it, "unit_explicit", False)
+
+                # Server-owned re-matching!
+                matched_line = MatchingEngine.match_line(
+                    db=db,
+                    company_id=payload.company_id,
+                    customer_id=payload.customer_id,
+                    line_number=line_no,
+                    original_text=orig_text,
+                    product_phrase=phrase,
+                    quantity=qty,
+                    unit=unit,
+                    raw_unit=raw_unit,
+                    unit_explicit=unit_explicit
+                )
+                extracted_lines.append(matched_line)
+        else:
             if not payload.text or not payload.text.strip():
-                raise ValueError("Either 'lines' or non-empty 'text' must be provided to create an order.")
+                raise ValueError("Either 'lines', 'items', or non-empty 'text' must be provided to create an order.")
             parser = OrderParsingService()
             parsed = await parser.parse_order(
                 db=db,
@@ -185,7 +250,12 @@ async def create_order_from_match_endpoint(
                 source_type=payload.source_type
             )
             raw_input = parsed.raw_input
-            lines = []
+            if len(parsed.items) > settings.MAX_ORDER_LINES:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Order lines exceed maximum limit of {settings.MAX_ORDER_LINES} lines."
+                )
+
             for item in parsed.items:
                 res = MatchingEngine.match_line(
                     db=db,
@@ -199,17 +269,20 @@ async def create_order_from_match_endpoint(
                     raw_unit=item.raw_unit,
                     unit_explicit=item.unit_explicit
                 )
-                lines.append(res)
+                extracted_lines.append(res)
 
         order = OrderWorkflowService.create_order_from_match(
             db=db,
             company_id=payload.company_id,
             customer_id=payload.customer_id,
             raw_input=raw_input,
-            lines=lines,
-            order_number=payload.order_number
+            lines=extracted_lines,
+            order_number=payload.order_number,
+            idempotency_key=eff_idempotency_key
         )
         return order
+    except HTTPException:
+        raise
     except ValueError as ve:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -314,36 +387,62 @@ def confirm_line_match_endpoint(
     Operator confirms a product match for a customer phrase.
     Updates or creates CustomerProductAlias with incremented confirmed_count in SQL,
     and updates line status in the order if order_id and line_id exist.
+    Derives customer_id, product_id, and phrase from order and line records.
     """
     eff_order_id = order_id or payload.order_id
     eff_line_id = line_id or payload.line_id
     try:
-        if eff_order_id is not None and eff_line_id is not None and db.get(Order, eff_order_id):
-            line = OrderWorkflowService.confirm_line(
-                db=db,
-                order_id=eff_order_id,
-                line_id=eff_line_id
-            )
-            stmt = select(CustomerProductAlias).where(
-                CustomerProductAlias.customer_id == payload.customer_id,
-                CustomerProductAlias.product_id == (line.matched_product_id or payload.product_id)
-            )
-            alias = db.execute(stmt).scalars().first()
-            if not alias:
-                alias = LearningMemoryService.confirm_match(
+        if eff_order_id is not None and eff_line_id is not None:
+            order = db.get(Order, eff_order_id)
+            line = db.get(OrderLine, eff_line_id)
+
+            if order and line:
+                if line.order_id != eff_order_id:
+                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Order line {eff_line_id} does not belong to order {eff_order_id}")
+
+                # Verify client payload does not contradict path or DB identity
+                if payload.customer_id is not None and payload.customer_id != order.customer_id:
+                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="customer_id in payload does not match order's customer")
+                if payload.order_id is not None and payload.order_id != eff_order_id:
+                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="order_id in payload does not match path")
+                if payload.line_id is not None and payload.line_id != eff_line_id:
+                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="line_id in payload does not match path")
+                if line.matched_product_id is None:
+                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Order line has no matched product. Use correct_line to assign a product first.")
+                if payload.product_id is not None and payload.product_id != line.matched_product_id:
+                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="product_id in payload does not match line's matched product")
+
+                confirmed_line = OrderWorkflowService.confirm_line(
                     db=db,
-                    customer_id=payload.customer_id,
-                    product_id=line.matched_product_id or payload.product_id,
-                    original_phrase=payload.original_phrase
+                    order_id=eff_order_id,
+                    line_id=eff_line_id
                 )
-            return ConfirmMatchResponse(
-                status="confirmed",
-                customer_id=alias.customer_id,
-                product_id=alias.product_id,
-                original_phrase=alias.original_phrase,
-                confirmed_count=alias.confirmed_count,
-                corrected_count=alias.corrected_count
-            )
+                stmt = select(CustomerProductAlias).where(
+                    CustomerProductAlias.customer_id == order.customer_id,
+                    CustomerProductAlias.product_id == confirmed_line.matched_product_id,
+                    CustomerProductAlias.normalized_phrase == normalize_text(confirmed_line.product_phrase)
+                )
+                alias = db.execute(stmt).scalars().first()
+                if not alias:
+                    stmt_fallback = select(CustomerProductAlias).where(
+                        CustomerProductAlias.customer_id == order.customer_id,
+                        CustomerProductAlias.product_id == confirmed_line.matched_product_id
+                    )
+                    alias = db.execute(stmt_fallback).scalars().first()
+
+                return ConfirmMatchResponse(
+                    status="confirmed",
+                    customer_id=alias.customer_id if alias else order.customer_id,
+                    product_id=alias.product_id if alias else confirmed_line.matched_product_id,
+                    original_phrase=alias.original_phrase if alias else confirmed_line.product_phrase,
+                    confirmed_count=alias.confirmed_count if alias else 1,
+                    corrected_count=alias.corrected_count if alias else 0
+                )
+            elif not order and not line:
+                # Standalone fallback when neither order nor line exist in DB
+                pass
+            else:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Order {eff_order_id} or line {eff_line_id} does not exist or does not belong to order")
 
         alias = LearningMemoryService.confirm_match(
             db=db,
@@ -361,6 +460,8 @@ def confirm_line_match_endpoint(
             confirmed_count=alias.confirmed_count,
             corrected_count=alias.corrected_count
         )
+    except HTTPException:
+        raise
     except (AliasConflictError, ValueError) as ve:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -390,31 +491,61 @@ def correct_line_match_endpoint(
     eff_order_id = order_id or payload.order_id
     eff_line_id = line_id or payload.line_id
     try:
-        if eff_order_id is not None and eff_line_id is not None and db.get(Order, eff_order_id):
-            correction, line = OrderWorkflowService.correct_line(
-                db=db,
-                order_id=eff_order_id,
-                line_id=eff_line_id,
-                correct_product_id=payload.correct_product_id,
-                notes=payload.notes
-            )
-            stmt = select(CustomerProductAlias).where(
-                CustomerProductAlias.customer_id == payload.customer_id,
-                CustomerProductAlias.product_id == payload.correct_product_id
-            )
-            alias = db.execute(stmt).scalars().first()
-            return CorrectMatchResponse(
-                status="corrected",
-                correction_id=correction.id,
-                customer_id=alias.customer_id if alias else payload.customer_id,
-                suggested_product_id=correction.suggested_product_id,
-                correct_product_id=line.matched_product_id,
-                original_phrase=alias.original_phrase if alias else payload.original_phrase,
-                confirmed_count=alias.confirmed_count if alias else 1,
-                corrected_count=alias.corrected_count if alias else 1,
-                order_id=correction.order_id,
-                order_line_id=correction.order_line_id
-            )
+        if eff_order_id is not None and eff_line_id is not None:
+            order = db.get(Order, eff_order_id)
+            line = db.get(OrderLine, eff_line_id)
+
+            if order and line:
+                if line.order_id != eff_order_id:
+                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Order line {eff_line_id} does not belong to order {eff_order_id}")
+
+                # Verify client payload does not contradict path or DB identity
+                if payload.customer_id is not None and payload.customer_id != order.customer_id:
+                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="customer_id in payload does not match order's customer")
+                if payload.order_id is not None and payload.order_id != eff_order_id:
+                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="order_id in payload does not match path")
+                if payload.line_id is not None and payload.line_id != eff_line_id:
+                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="line_id in payload does not match path")
+                if payload.suggested_product_id is not None and line.matched_product_id is not None and payload.suggested_product_id != line.matched_product_id:
+                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="suggested_product_id in payload does not match line's current matched product")
+
+                correction, corrected_line = OrderWorkflowService.correct_line(
+                    db=db,
+                    order_id=eff_order_id,
+                    line_id=eff_line_id,
+                    correct_product_id=payload.correct_product_id,
+                    notes=payload.notes
+                )
+                stmt = select(CustomerProductAlias).where(
+                    CustomerProductAlias.customer_id == order.customer_id,
+                    CustomerProductAlias.product_id == payload.correct_product_id,
+                    CustomerProductAlias.normalized_phrase == normalize_text(corrected_line.product_phrase)
+                )
+                alias = db.execute(stmt).scalars().first()
+                if not alias:
+                    stmt_fallback = select(CustomerProductAlias).where(
+                        CustomerProductAlias.customer_id == order.customer_id,
+                        CustomerProductAlias.product_id == payload.correct_product_id
+                    )
+                    alias = db.execute(stmt_fallback).scalars().first()
+
+                return CorrectMatchResponse(
+                    status="corrected",
+                    correction_id=correction.id,
+                    customer_id=alias.customer_id if alias else order.customer_id,
+                    suggested_product_id=correction.suggested_product_id,
+                    correct_product_id=corrected_line.matched_product_id,
+                    original_phrase=alias.original_phrase if alias else corrected_line.product_phrase,
+                    confirmed_count=alias.confirmed_count if alias else 1,
+                    corrected_count=alias.corrected_count if alias else 1,
+                    order_id=correction.order_id,
+                    order_line_id=correction.order_line_id
+                )
+            elif not order and not line:
+                # Standalone fallback when neither order nor line exist in DB
+                pass
+            else:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Order {eff_order_id} or line {eff_line_id} does not exist or does not belong to order")
 
         correction, alias = LearningMemoryService.correct_match(
             db=db,
@@ -438,6 +569,8 @@ def correct_line_match_endpoint(
             order_id=correction.order_id,
             order_line_id=correction.order_line_id
         )
+    except HTTPException:
+        raise
     except ValueError as ve:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

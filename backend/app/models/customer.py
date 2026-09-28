@@ -17,13 +17,19 @@ class Customer(Base):
 
     __table_args__ = (
         UniqueConstraint("company_id", "customer_code", name="uq_company_customer_code"),
+        UniqueConstraint("id", "company_id", name="uq_customers_id_company_id"),
     )
 
     # Relationships
     company = relationship("Company", back_populates="customers")
     contacts = relationship("CustomerContact", back_populates="customer", cascade="all, delete-orphan")
     aliases = relationship("CustomerProductAlias", back_populates="customer", cascade="all, delete-orphan")
-    orders = relationship("Order", back_populates="customer")
+    orders = relationship(
+        "Order",
+        back_populates="customer",
+        primaryjoin="and_(Customer.id==Order.customer_id, Customer.company_id==Order.company_id)",
+        overlaps="company,orders"
+    )
     corrections = relationship("HumanCorrection", back_populates="customer", cascade="all, delete-orphan")
 
 

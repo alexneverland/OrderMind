@@ -19,6 +19,8 @@ def test_engine():
         poolclass=StaticPool,
         future=True
     )
+    with engine.connect() as conn:
+        conn.exec_driver_sql("PRAGMA foreign_keys=ON")
     Base.metadata.create_all(bind=engine)
     yield engine
     Base.metadata.drop_all(bind=engine)
