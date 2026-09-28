@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, Text, DateTime, ForeignKey, JSON, func
+from sqlalchemy import Column, Integer, String, Float, Text, DateTime, ForeignKey, JSON, Boolean, func
 from sqlalchemy.orm import relationship
 from backend.app.core.database import Base
 
@@ -28,12 +28,14 @@ class Order(Base):
     customer_id = Column(Integer, ForeignKey("customers.id", ondelete="RESTRICT"), nullable=False, index=True)
     order_source_id = Column(Integer, ForeignKey("order_sources.id", ondelete="SET NULL"), nullable=True, index=True)
     order_number = Column(String(100), nullable=False, unique=True, index=True)
-    status = Column(String(50), nullable=False, default="pending_review")  # pending_review, confirmed, exported, cancelled
+    status = Column(String(50), nullable=False, default="pending_review")  # draft, processing, pending_review, approved, exported, cancelled
     overall_confidence = Column(Float, default=0.0, nullable=False)
     raw_input = Column(Text, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     confirmed_at = Column(DateTime(timezone=True), nullable=True)
+    approved_at = Column(DateTime(timezone=True), nullable=True)
     exported_at = Column(DateTime(timezone=True), nullable=True)
+    last_export_profile_id = Column(Integer, ForeignKey("export_profiles.id", ondelete="SET NULL"), nullable=True)
 
     # Relationships
     company = relationship("Company", back_populates="orders")
@@ -41,6 +43,7 @@ class Order(Base):
     order_source = relationship("OrderSource", back_populates="orders")
     lines = relationship("OrderLine", back_populates="order", cascade="all, delete-orphan", order_by="OrderLine.line_number")
     corrections = relationship("HumanCorrection", back_populates="order")
+    last_export_profile = relationship("ExportProfile")
 
 
 class OrderLine(Base):
@@ -53,6 +56,8 @@ class OrderLine(Base):
     product_phrase = Column(String(500), nullable=False)
     requested_quantity = Column(Float, nullable=False, default=1.0)
     requested_unit = Column(String(50), nullable=False, default="piece")
+    raw_unit = Column(String(50), nullable=True)
+    unit_explicit = Column(Boolean, default=False, nullable=False)
     
     # Matching output
     matched_product_id = Column(Integer, ForeignKey("products.id", ondelete="SET NULL"), nullable=True, index=True)
@@ -64,7 +69,7 @@ class OrderLine(Base):
     # Confidence and explainability (JSON-compatible database type)
     confidence_score = Column(Float, default=0.0, nullable=False)
     confidence_reasons = Column(JSON, nullable=False, default=list)  # e.g. ["+ Customer alias match", "+ Packaging match"]
-    status = Column(String(50), default="needs_review", nullable=False)  # matched, needs_review, confirmed, manual_override
+    status = Column(String(50), default="needs_review", nullable=False)  # auto_accepted, needs_review, confirmed, corrected, unresolved
 
     # Relationships
     order = relationship("Order", back_populates="lines")

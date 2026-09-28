@@ -12,6 +12,7 @@ class ExportProfile(Base):
     format = Column(String(50), nullable=False, default="excel")  # excel, csv, json
     delimiter = Column(String(10), default=",")
     include_header = Column(Boolean, default=True, nullable=False)
+    encoding = Column(String(20), default="utf-8-sig", nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     # Relationships
