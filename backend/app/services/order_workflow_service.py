@@ -1,6 +1,7 @@
 from typing import Optional, List, Tuple
 from datetime import datetime, timezone
 import uuid
+import math
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 
@@ -19,6 +20,7 @@ from backend.app.schemas.workflow import (
 from backend.app.schemas.matching import LineMatchResult, MatchDecision
 from backend.app.services.learning_memory_service import LearningMemoryService
 from backend.app.core.text_normalizer import normalize_unit, resolve_unit
+from backend.app.services.packaging_resolver import resolve_product_packaging
 
 
 class OrderApprovalError(ValueError):
@@ -51,7 +53,8 @@ class OrderWorkflowService:
         lines: List[LineMatchResult],
         order_number: Optional[str] = None,
         order_source_id: Optional[int] = None,
-        idempotency_key: Optional[str] = None
+        idempotency_key: Optional[str] = None,
+        idempotency_fingerprint: Optional[str] = None,
     ) -> Order:
         """
         Persists matched order lines into a real Order record.
@@ -84,6 +87,7 @@ class OrderWorkflowService:
                 order_source_id=order_source_id,
                 order_number=order_number.strip(),
                 idempotency_key=idempotency_key.strip() if idempotency_key else None,
+                idempotency_fingerprint=idempotency_fingerprint,
                 status=OrderStatus.PENDING_REVIEW.value,
                 overall_confidence=overall_conf,
                 raw_input=raw_input.strip() if raw_input else ""
@@ -102,7 +106,7 @@ class OrderWorkflowService:
 
                 matched_prod_id = line_res.best_match.product_id if line_res.best_match else None
                 final_sku = line_res.best_match.sku if line_res.best_match else None
-                final_unit = (line_res.best_match.unit if line_res.best_match else None) or line_res.unit
+                final_unit = line_res.final_unit or line_res.unit
 
                 order_line = OrderLine(
                     order_id=order.id,
@@ -114,6 +118,7 @@ class OrderWorkflowService:
                     raw_unit=line_res.raw_unit,
                     unit_explicit=line_res.unit_explicit,
                     matched_product_id=matched_prod_id,
+                    matched_packaging_id=line_res.matched_packaging_id,
                     final_sku=final_sku,
                     final_quantity=line_res.quantity,
                     final_unit=final_unit,
@@ -221,6 +226,7 @@ class OrderWorkflowService:
             )
 
         try:
+            order.version += 1
             order_line.status = OrderLineStatus.CONFIRMED.value
 
             # Update learning memory without committing in sub-service
@@ -231,7 +237,6 @@ class OrderWorkflowService:
                 original_phrase=order_line.product_phrase,
                 order_id=order.id,
                 line_id=order_line.id,
-                commit=False
             )
 
             db.commit()
@@ -284,11 +289,18 @@ class OrderWorkflowService:
         previous_suggested_id = order_line.matched_product_id
 
         try:
+            order.version += 1
             # Update line values
             order_line.matched_product_id = correct_product_id
             order_line.final_sku = correct_prod.sku
-            order_line.final_unit = correct_prod.unit
-            order_line.status = OrderLineStatus.CORRECTED.value
+            requested_final_unit = order_line.final_unit or order_line.requested_unit
+            compatible, package_id, _ = resolve_product_packaging(correct_prod, requested_final_unit)
+            order_line.final_unit = requested_final_unit
+            order_line.matched_packaging_id = package_id if compatible else None
+            order_line.status = (
+                OrderLineStatus.CORRECTED.value if compatible
+                else OrderLineStatus.NEEDS_REVIEW.value
+            )
 
             # Record correction and update learning memory without committing in sub-service
             correction, _ = LearningMemoryService.correct_match(
@@ -300,7 +312,6 @@ class OrderWorkflowService:
                 order_id=order.id,
                 line_id=order_line.id,
                 notes=notes,
-                commit=False
             )
 
             db.commit()
@@ -341,8 +352,9 @@ class OrderWorkflowService:
             raise ValueError(f"Order line {line_id} does not belong to order {order_id}")
 
         try:
+            order.version += 1
             if final_quantity is not None:
-                if final_quantity <= 0:
+                if not math.isfinite(final_quantity) or final_quantity <= 0:
                     raise ValueError("Quantity must be greater than zero")
                 order_line.final_quantity = final_quantity
 
@@ -354,23 +366,10 @@ class OrderWorkflowService:
                 if order_line.matched_product_id:
                     prod = db.get(Product, order_line.matched_product_id)
                     if prod:
-                        canonical_prod_unit = normalize_unit(prod.unit)
-                        if canonical_unit == canonical_prod_unit:
-                            order_line.matched_packaging_id = None
-                        else:
-                            matching_pkgs = [
-                                pkg for pkg in prod.packagings
-                                if normalize_unit(pkg.package_type) == canonical_unit or normalize_unit(pkg.unit) == canonical_unit
-                            ]
-                            if len(matching_pkgs) == 1:
-                                order_line.matched_packaging_id = matching_pkgs[0].id
-                            elif len(matching_pkgs) > 1:
-                                factors = set(p.pieces_per_case for p in matching_pkgs)
-                                if len(factors) > 1:
-                                    raise ValueError(
-                                        f"Ambiguous packaging for unit '{canonical_unit}': multiple packagings match with different quantities"
-                                    )
-                                order_line.matched_packaging_id = matching_pkgs[0].id
+                        compatible, package_id, reason = resolve_product_packaging(prod, canonical_unit)
+                        if not compatible:
+                            raise ValueError(f"Ambiguous packaging for unit '{canonical_unit}'" if reason.startswith("Multiple") else f"Invalid packaging for unit '{canonical_unit}': {reason}")
+                        order_line.matched_packaging_id = package_id
 
                 order_line.final_unit = canonical_unit
 
@@ -429,13 +428,25 @@ class OrderWorkflowService:
                 raise OrderApprovalError(
                     f"Order line {line.line_number} has no matched product and cannot be approved."
                 )
+            product = line.matched_product
+            if not product or product.company_id != order.company_id or not product.active:
+                raise OrderApprovalError(f"Order line {line.line_number} has an invalid or inactive product.")
+            unit = line.final_unit or line.requested_unit
+            compatible, package_id, reason = resolve_product_packaging(
+                product, unit, line.product_phrase
+            )
+            if not compatible or package_id != line.matched_packaging_id:
+                raise OrderApprovalError(
+                    f"Order line {line.line_number} has invalid packaging: {reason}."
+                )
             qty = line.final_quantity if line.final_quantity is not None else line.requested_quantity
-            if qty <= 0:
+            if not math.isfinite(qty) or qty <= 0:
                 raise OrderApprovalError(
                     f"Order line {line.line_number} has non-positive quantity."
                 )
 
         try:
+            order.version += 1
             now = datetime.now(timezone.utc)
             order.status = OrderStatus.APPROVED.value
             order.approved_at = now
@@ -455,11 +466,12 @@ class OrderWorkflowService:
                     "id": customer.id if customer else None,
                     "customer_code": customer.customer_code if customer else "",
                     "customer_name": customer.customer_name if customer else "",
-                    "email": customer.email if customer else "",
-                    "phone": customer.phone if customer else "",
+                    "email": (customer.email or "") if customer else "",
+                    "phone": (customer.phone or "") if customer else "",
                 },
                 "lines": [
                     {
+                        "line_id": l.id,
                         "line_number": l.line_number,
                         "original_text": l.original_text,
                         "product_phrase": l.product_phrase,
@@ -471,7 +483,11 @@ class OrderWorkflowService:
                         "requested_unit": l.requested_unit,
                         "confidence_score": round(l.confidence_score, 2),
                         "status": l.status,
-                        "barcode": l.matched_product.barcode if l.matched_product else "",
+                        "barcode": (l.matched_product.barcode or "") if l.matched_product else "",
+                        "packaging_id": l.matched_packaging_id,
+                        "package_code": l.matched_packaging.package_code if l.matched_packaging else None,
+                        "packaging_barcode": l.matched_packaging.packaging_barcode if l.matched_packaging else None,
+                        "pieces_per_case": l.matched_packaging.pieces_per_case if l.matched_packaging else None,
                     }
                     for l in sorted(order.lines, key=lambda x: x.line_number)
                 ]
@@ -495,6 +511,7 @@ class OrderWorkflowService:
             raise ValueError(f"Order {order_id} cannot be cancelled because its status is '{order.status}'")
 
         try:
+            order.version += 1
             order.status = OrderStatus.CANCELLED.value
             db.commit()
             db.refresh(order)
@@ -515,8 +532,8 @@ class OrderWorkflowService:
             snap_order = snap.get("order", {})
             return CanonicalOrder(
                 order_id=order.id,
-                order_number=order.order_number,
-                company_id=order.company_id,
+                order_number=snap_order["order_number"],
+                company_id=snap_order["company_id"],
                 customer=CanonicalOrderCustomer(
                     id=snap_cust.get("id") or 0,
                     customer_code=snap_cust.get("customer_code") or "",

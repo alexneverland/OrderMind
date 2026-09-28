@@ -133,12 +133,12 @@ class MasterDataService:
         """Reads Excel file into a DataFrame, handling various sheet formats."""
         try:
             df = pd.read_excel(io.BytesIO(file_bytes), engine="openpyxl", dtype=str)
-        except Exception as e:
+        except Exception:
             # Fallback to default engine
             try:
                 df = pd.read_excel(io.BytesIO(file_bytes), dtype=str)
-            except Exception as e2:
-                raise ValueError(f"Failed to read Excel file: {str(e2) or str(e)}")
+            except Exception:
+                raise ValueError("Failed to read Excel file") from None
         
         # Strip string column names
         df.columns = [str(c).strip() for c in df.columns]

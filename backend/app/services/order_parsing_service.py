@@ -14,7 +14,7 @@ from backend.app.schemas.order import (
     NormalizedOrderLineDraft
 )
 from backend.app.core.text_normalizer import (
-    is_grounded_in_input,
+    normalize_text,
     is_quantity_grounded_in_span,
     is_unit_grounded_in_span,
 )
@@ -80,22 +80,24 @@ class OrderParsingService:
             order_lines: List[NormalizedOrderLine] = []
             for idx, draft in enumerate(draft_items, start=1):
                 # Grounding verification: Check that draft original_text or product_phrase exists in input
-                if not (
-                    is_grounded_in_input(draft.original_text, normalized_input.raw_text)
-                    or is_grounded_in_input(draft.product_phrase, normalized_input.raw_text)
-                ):
+                if not normalize_text(draft.original_text) or normalize_text(draft.original_text) not in normalize_text(normalized_input.raw_text):
                     raise ValueError(
                         f"Extracted item '{draft.original_text}' cannot be grounded in customer input (hallucination detected)."
                     )
 
                 # Quantity grounding check
-                if not is_quantity_grounded_in_span(draft.quantity, draft.original_text, normalized_input.raw_text):
+                if not is_quantity_grounded_in_span(
+                    draft.quantity, draft.original_text, normalized_input.raw_text, draft.product_phrase
+                ):
                     raise ValueError(
                         f"Extracted quantity {draft.quantity} for item '{draft.original_text}' cannot be grounded in customer input (contradictory extraction)."
                     )
 
                 # Unit grounding check
-                if not is_unit_grounded_in_span(draft.unit, draft.raw_unit, draft.unit_explicit, draft.original_text, normalized_input.raw_text):
+                if not is_unit_grounded_in_span(
+                    draft.unit, draft.raw_unit, draft.unit_explicit,
+                    draft.original_text, normalized_input.raw_text, draft.product_phrase
+                ):
                     raise ValueError(
                         f"Extracted unit '{draft.unit}' for item '{draft.original_text}' cannot be grounded in customer input (contradictory extraction)."
                     )
@@ -135,6 +137,6 @@ class OrderParsingService:
                 provider_name,
                 model_name,
                 duration_ms,
-                str(e)
+                type(e).__name__
             )
             raise

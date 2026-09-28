@@ -252,14 +252,20 @@ def test_api_export_profile_crud_and_patch_line_values(client: TestClient, db_se
     order_id = order_create["id"]
     line_id = order_create["lines"][0]["id"]
 
+    resp_invalid_unit = client.patch(
+        f"/api/v1/orders/{order_id}/lines/{line_id}",
+        json={"final_unit": "kg"}
+    )
+    assert resp_invalid_unit.status_code == 400
+
     resp_patch = client.patch(
         f"/api/v1/orders/{order_id}/lines/{line_id}",
-        json={"final_quantity": 25.0, "final_unit": "kg"}
+        json={"final_quantity": 25.0, "final_unit": "piece"}
     )
     assert resp_patch.status_code == 200
     patched_line = resp_patch.json()
     assert patched_line["final_quantity"] == 25.0
-    assert patched_line["final_unit"] == "kg"
+    assert patched_line["final_unit"] == "piece"
     assert patched_line["requested_quantity"] == 10.0
     assert patched_line["requested_unit"] == "piece"
 

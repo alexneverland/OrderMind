@@ -15,6 +15,8 @@ class MatchPriority(int, Enum):
     Lower number indicates strictly higher priority in candidate ranking.
     """
     EXACT_SKU = 1
+    EXACT_PACKAGE_CODE = 1
+    EXACT_PACKAGE_BARCODE = 1
     EXACT_BARCODE = 2
     EXACT_CUSTOMER_ALIAS = 3
     EXACT_GLOBAL_ALIAS = 4
@@ -68,6 +70,8 @@ class LineMatchResult(BaseModel):
     raw_unit: Optional[str] = None
     unit_explicit: bool = False
     best_match: Optional[MatchedProductInfo] = None
+    matched_packaging_id: Optional[int] = None
+    final_unit: Optional[str] = None
     confidence: ConfidenceResult
     alternatives: List[MatchCandidateDto] = Field(default_factory=list)
 

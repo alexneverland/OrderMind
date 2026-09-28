@@ -1,6 +1,7 @@
 import pytest
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy import select
+from sqlalchemy import select, create_engine
+from sqlalchemy.pool import NullPool
 
 from backend.app.core.database import Base
 from backend.app.models.company import Company
@@ -9,6 +10,16 @@ from backend.app.models.product import Product, ProductAlias, Packaging
 from backend.app.models.memory import CustomerProductAlias, HumanCorrection
 from backend.app.models.order import OrderSource, Order, OrderLine, MatchCandidate
 from backend.app.models.export import ExportProfile, ExportFieldMapping
+
+
+def test_sqlite_foreign_keys_enabled_on_every_connection():
+    engine = create_engine("sqlite+pysqlite:///:memory:", poolclass=NullPool)
+    try:
+        for _ in range(2):
+            with engine.connect() as connection:
+                assert connection.exec_driver_sql("PRAGMA foreign_keys").scalar() == 1
+    finally:
+        engine.dispose()
 
 
 def test_all_models_registered_in_metadata():
@@ -292,5 +303,3 @@ def test_order_number_unique_per_company(db_session):
     with pytest.raises(IntegrityError):
         db_session.commit()
     db_session.rollback()
-
-

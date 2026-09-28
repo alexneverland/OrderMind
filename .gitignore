@@ -80,6 +80,8 @@ dist/
 
 # Testing & Coverage
 .pytest_cache/
+.pytest_*/
+*.pre-alembic-*.bak
 .coverage
 htmlcov/
 .tox/

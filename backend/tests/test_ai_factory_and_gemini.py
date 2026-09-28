@@ -29,7 +29,7 @@ def test_ai_provider_factory_distinction():
 def test_gemini_provider_missing_key():
     """Verify GeminiProvider raises when API key is missing."""
     provider = GeminiProvider(api_key="")
-    with pytest.raises(ValueError, match="GEMINI_API_KEY is not configured"):
+    with pytest.raises(RuntimeError, match="AI extraction provider is unavailable"):
         provider._get_client()
 
 
@@ -112,7 +112,7 @@ async def test_gemini_provider_malformed_response_handling():
     provider._client = mock_client
 
     inp = NormalizedInput(raw_text="some order text", normalized_text="")
-    with pytest.raises(ValueError, match="Gemini order extraction failed after 2 attempts"):
+    with pytest.raises(RuntimeError, match="AI extraction provider is unavailable"):
         await provider.extract_order(inp)
 
     # Verify it attempted 2 async calls

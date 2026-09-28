@@ -68,16 +68,47 @@ def extract_source_field_value(
     customer = order.customer
     product = line.matched_product
 
-    # Check snapshot first if order has approved_snapshot
-    if order.approved_snapshot and isinstance(order.approved_snapshot, dict):
-        snap_order = order.approved_snapshot.get("order", {})
-        snap_cust = order.approved_snapshot.get("customer", {})
-        snap_lines = order.approved_snapshot.get("lines", [])
-        snap_line = next((l for l in snap_lines if l.get("line_number") == line.line_number), None)
-    else:
-        snap_order = {}
-        snap_cust = {}
-        snap_line = None
+    if isinstance(order.approved_snapshot, dict):
+        snap_order = order.approved_snapshot["order"]
+        snap_cust = order.approved_snapshot["customer"]
+        snap_line = next(
+            (item for item in order.approved_snapshot["lines"]
+             if item.get("line_id", line.id) == line.id and item["line_number"] == line.line_number), None
+        )
+        if snap_line is None:
+            raise ValueError(f"Approved snapshot is missing line {line.line_number}")
+        snapshot_fields = {
+            "order.id": snap_order["id"],
+            "order.order_number": snap_order["order_number"],
+            "order.created_at": snap_order["created_at"],
+            "order.approved_at": snap_order["approved_at"],
+            "order.overall_confidence": snap_order["overall_confidence"],
+            "customer.id": snap_cust["id"],
+            "customer.customer_code": snap_cust["customer_code"],
+            "customer.customer_name": snap_cust["customer_name"],
+            "customer.email": snap_cust["email"],
+            "customer.phone": snap_cust["phone"],
+            "line.line_number": snap_line["line_number"],
+            "line.original_text": snap_line["original_text"],
+            "line.product_phrase": snap_line["product_phrase"],
+            "line.sku": snap_line["sku"],
+            "line.description": snap_line["description"],
+            "line.quantity": snap_line["quantity"],
+            "line.unit": snap_line["unit"],
+            "line.requested_quantity": snap_line["requested_quantity"],
+            "line.requested_unit": snap_line["requested_unit"],
+            "line.confidence_score": snap_line["confidence_score"],
+            "line.status": snap_line["status"],
+            "product.barcode": snap_line["barcode"],
+            "product.sku": snap_line["sku"],
+            "product.description": snap_line["description"],
+        }
+        value = snapshot_fields[field_name]
+        return sanitize_formula_injection(value) if sanitize else value
+
+    snap_order = {}
+    snap_cust = {}
+    snap_line = None
 
     resolvers = {
         # Order

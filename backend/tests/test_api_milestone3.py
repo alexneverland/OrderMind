@@ -153,8 +153,12 @@ def test_api_confirm_match_endpoint(client: TestClient, db_session):
     assert res1["status"] == "confirmed"
     assert res1["confirmed_count"] == 1
 
-    # 2. Second confirm via path endpoint
-    resp2 = client.post(f"/api/v1/orders/123/lines/1/confirm", json=payload)
+    # A nonexistent nested path must not fall back to standalone alias mutation.
+    invalid = client.post("/api/v1/orders/123/lines/1/confirm", json=payload)
+    assert invalid.status_code == 400
+
+    # 2. Second standalone confirm
+    resp2 = client.post("/api/v1/orders/lines/confirm", json=payload)
     assert resp2.status_code == 200
     res2 = resp2.json()
     assert res2["confirmed_count"] == 2
@@ -248,4 +252,3 @@ def test_api_correct_match_with_order_line_reference_and_validation(client: Test
     resp_foreign = client.post("/api/v1/orders/lines/correct", json=payload_foreign)
     assert resp_foreign.status_code == 400
     assert "belongs to company" in resp_foreign.json()["detail"]
-

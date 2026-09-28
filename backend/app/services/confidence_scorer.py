@@ -63,9 +63,10 @@ class ConfidenceScorer:
         if primary_evidence_type == "exact_sku":
             score = BASE_WEIGHT_EXACT_SKU
             reasons.append("+ Exact SKU match")
-        elif primary_evidence_type == "exact_barcode":
+        elif primary_evidence_type in ("exact_barcode", "exact_packaging_code", "exact_packaging_barcode"):
             score = BASE_WEIGHT_EXACT_BARCODE
-            reasons.append("+ Exact Barcode match")
+            reasons.append("+ Exact Barcode match" if primary_evidence_type == "exact_barcode"
+                           else "+ Exact packaging identifier match")
         elif primary_evidence_type == "exact_normalized_description":
             score = BASE_WEIGHT_EXACT_DESCRIPTION
             reasons.append("+ Exact product description match")
@@ -179,4 +180,3 @@ class ConfidenceScorer:
                 best_conf.reasons.append(ambiguity_reason)
 
         return best_conf
-

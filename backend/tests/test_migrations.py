@@ -1,0 +1,60 @@
+"""Exercise the shipped migrations against a populated SQLite database."""
+
+import os
+import sqlite3
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def _alembic(database: Path, *args: str) -> None:
+    env = os.environ.copy()
+    env["DATABASE_URL"] = "sqlite:///" + database.as_posix()
+    subprocess.run([sys.executable, "-m", "alembic", *args], cwd=ROOT, env=env,
+                   check=True, capture_output=True, text=True)
+
+
+def test_fresh_sqlite_database_reaches_model_head(tmp_path: Path):
+    database = tmp_path / "fresh.sqlite"
+    _alembic(database, "upgrade", "head")
+    _alembic(database, "check")
+    with sqlite3.connect(database) as connection:
+        connection.execute("PRAGMA foreign_keys=ON")
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("c547ac2e9811",)
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_tenant_migration_preserves_rows_and_enforces_company_links(tmp_path: Path):
+    database = tmp_path / "orders.sqlite"
+    _alembic(database, "upgrade", "b20e1773d5fc")
+    with sqlite3.connect(database) as connection:
+        connection.execute("INSERT INTO companies (id,name) VALUES (1,'A'),(2,'B')")
+        connection.execute("INSERT INTO customers (id,company_id,customer_code,customer_name,active) VALUES (1,1,'A','Buyer A',1)")
+        connection.execute("INSERT INTO products (id,company_id,sku,description,unit,active) VALUES (1,1,'SKU-A','Product A','piece',1),(2,2,'SKU-B','Product B','piece',1)")
+        connection.execute("INSERT INTO export_profiles (id,company_id,name,format,include_header,encoding) VALUES (1,1,'Profile A','json',1,'utf-8')")
+        connection.execute("INSERT INTO orders (id,company_id,customer_id,order_number,version,status,overall_confidence,raw_input) VALUES (1,1,1,'A-1',1,'pending_review',0,'one')")
+        connection.execute("INSERT INTO packagings (id,product_id,package_type,pieces_per_case,unit) VALUES (1,1,'case',12,'case')")
+        connection.execute("INSERT INTO order_lines (id,order_id,line_number,original_text,product_phrase,requested_quantity,requested_unit,unit_explicit,matched_product_id,matched_packaging_id,confidence_score,confidence_reasons,status) VALUES (1,1,1,'one','one',1,'case',1,1,1,1,'[]','auto_accepted')")
+        connection.execute("INSERT INTO customer_product_aliases (id,customer_id,product_id,original_phrase,normalized_phrase,confirmed_count,corrected_count,active) VALUES (1,1,1,'one','one',1,0,1)")
+        connection.execute("INSERT INTO match_candidates (id,order_line_id,product_id,rank,match_type,score,explanation) VALUES (1,1,1,1,'exact_sku',1,'exact')")
+        connection.execute("INSERT INTO human_corrections (id,customer_id,order_id,order_line_id,original_phrase,correct_product_id) VALUES (1,1,1,1,'one',1)")
+        connection.execute("INSERT INTO export_records (id,order_id,export_profile_id,format,filename) VALUES (1,1,1,'json','a.json')")
+
+    _alembic(database, "upgrade", "head")
+    with sqlite3.connect(database) as connection:
+        connection.execute("PRAGMA foreign_keys=ON")
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+        for table in ("packagings", "order_lines", "customer_product_aliases", "match_candidates", "human_corrections", "export_records"):
+            assert connection.execute(f"SELECT company_id FROM {table} WHERE id=1").fetchone() == (1,)
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute("UPDATE order_lines SET matched_product_id=2 WHERE id=1")
+        connection.rollback()
+
+    _alembic(database, "downgrade", "b20e1773d5fc")
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT matched_product_id FROM order_lines WHERE id=1").fetchone() == (1,)

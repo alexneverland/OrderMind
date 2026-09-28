@@ -1,15 +1,21 @@
 import logging
+import hashlib
+import json
 from typing import Optional, List, Any
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Response, Header
 from sqlalchemy.orm import Session
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError, OperationalError
+from sqlalchemy.orm.exc import StaleDataError
 
 from backend.app.config import settings
 from backend.app.core.database import get_db
-from backend.app.core.text_normalizer import normalize_text
+from backend.app.core.text_normalizer import (
+    normalize_text, is_quantity_grounded_in_span, is_unit_grounded_in_span,
+)
 from backend.app.models.order import Order, OrderLine
 from backend.app.models.memory import CustomerProductAlias
-from backend.app.schemas.order import OrderParseRequest, OrderParseResponse
+from backend.app.schemas.order import OrderParseRequest, OrderParseResponse, NormalizedOrderLine
 from backend.app.schemas.matching import (
     OrderMatchRequest,
     OrderMatchResponse,
@@ -29,7 +35,7 @@ from backend.app.schemas.workflow import (
 )
 from backend.app.services.order_parsing_service import OrderParsingService
 from backend.app.services.matching_engine import MatchingEngine
-from backend.app.services.learning_memory_service import LearningMemoryService, AliasConflictError
+from backend.app.services.learning_memory_service import LearningMemoryService, AliasConflictError, ConcurrentAliasError
 from backend.app.services.order_workflow_service import (
     OrderWorkflowService,
     OrderApprovalError,
@@ -53,6 +59,8 @@ async def parse_order_endpoint(
     """
     service = OrderParsingService()
     try:
+        if len(payload.text) > settings.MAX_RAW_ORDER_TEXT_SIZE:
+            raise HTTPException(status_code=413, detail="Order text exceeds maximum allowed size")
         normalized_order = await service.parse_order(
             db=db,
             company_id=payload.company_id,
@@ -60,6 +68,8 @@ async def parse_order_endpoint(
             text=payload.text,
             source_type=payload.source_type
         )
+        if len(normalized_order.items) > settings.MAX_ORDER_LINES:
+            raise HTTPException(status_code=413, detail="Order line limit exceeded")
         return OrderParseResponse(
             company_id=normalized_order.company_id,
             customer_id=normalized_order.customer_id,
@@ -68,13 +78,17 @@ async def parse_order_endpoint(
             items=normalized_order.items,
             total_items=len(normalized_order.items)
         )
+    except HTTPException:
+        raise
     except (ValueError, NotImplementedError) as ve:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(ve)
         )
+    except OperationalError:
+        raise
     except Exception as e:
-        logger.exception("Unexpected server error during order parsing: %s", str(e))
+        logger.error("Unexpected server error during order parsing: %s", type(e).__name__)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="An unexpected internal server error occurred while processing the order. Please try again later."
@@ -92,6 +106,8 @@ async def match_order_endpoint(
     """
     try:
         raw_input = payload.text or ""
+        if len(raw_input) > settings.MAX_RAW_ORDER_TEXT_SIZE:
+            raise HTTPException(status_code=413, detail="Order text exceeds maximum allowed size")
         lines_to_process = []
 
         if payload.items and len(payload.items) > 0:
@@ -111,6 +127,14 @@ async def match_order_endpoint(
             raw_input = normalized_order.raw_input
         else:
             raise ValueError("Either 'text' or non-empty 'items' must be provided for order matching")
+
+        if len(lines_to_process) > settings.MAX_ORDER_LINES:
+            raise HTTPException(status_code=413, detail="Order line limit exceeded")
+        for item in lines_to_process:
+            if normalize_text(item.original_text) not in normalize_text(raw_input):
+                raise ValueError(f"Line {item.line_number} is not present in raw order text")
+            if not is_quantity_grounded_in_span(item.quantity, item.original_text, raw_input, item.product_phrase) or not is_unit_grounded_in_span(item.unit, item.raw_unit, item.unit_explicit, item.original_text, raw_input, item.product_phrase):
+                raise ValueError(f"Line {item.line_number} quantity or unit is not grounded in raw order text")
 
         matched_lines: List[LineMatchResult] = []
         auto_accepted_count = 0
@@ -149,13 +173,17 @@ async def match_order_endpoint(
             needs_review_count=needs_review_count,
             unresolved_count=unresolved_count
         )
+    except HTTPException:
+        raise
     except (ValueError, NotImplementedError) as ve:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(ve)
         )
+    except OperationalError:
+        raise
     except Exception as e:
-        logger.exception("Unexpected server error during order matching: %s", str(e))
+        logger.error("Unexpected server error during order matching: %s", type(e).__name__)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="An unexpected internal server error occurred while processing matching. Please try again later."
@@ -177,13 +205,26 @@ async def create_order_from_match_endpoint(
         eff_idempotency_key = idempotency_key_header or payload.idempotency_key
         if eff_idempotency_key:
             eff_idempotency_key = eff_idempotency_key.strip()
-            existing_stmt = select(Order).where(
+            if not eff_idempotency_key or len(eff_idempotency_key) > 100:
+                raise HTTPException(status_code=400, detail="Idempotency-Key must contain 1 to 100 characters")
+        request_fingerprint = hashlib.sha256(json.dumps(
+            payload.model_dump(mode="json", exclude={"idempotency_key"}, exclude_none=True),
+            ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")).hexdigest() if eff_idempotency_key else None
+
+        def existing_for_key() -> Optional[Order]:
+            if not eff_idempotency_key:
+                return None
+            return db.execute(select(Order).where(
                 Order.company_id == payload.company_id,
                 Order.idempotency_key == eff_idempotency_key
-            )
-            existing_order = db.execute(existing_stmt).scalars().first()
-            if existing_order:
-                return existing_order
+            )).scalars().first()
+
+        existing_order = existing_for_key()
+        if existing_order:
+            if existing_order.idempotency_fingerprint != request_fingerprint:
+                raise HTTPException(status_code=409, detail="Idempotency-Key was already used with a different request")
+            return existing_order
 
         raw_input = payload.raw_input or payload.text or ""
         if len(raw_input) > settings.MAX_RAW_ORDER_TEXT_SIZE:
@@ -202,6 +243,10 @@ async def create_order_from_match_endpoint(
                     detail=f"Order lines exceed maximum limit of {settings.MAX_ORDER_LINES} lines."
                 )
 
+            if not raw_input.strip():
+                raise ValueError("Raw order text is required when supplying extracted items")
+
+            seen_line_numbers = set()
             for idx, it in enumerate(raw_items):
                 if isinstance(it, dict):
                     line_no = it.get("line_number", idx + 1)
@@ -224,18 +269,36 @@ async def create_order_from_match_endpoint(
                     raw_unit = getattr(it, "raw_unit", None)
                     unit_explicit = getattr(it, "unit_explicit", False)
 
-                # Server-owned re-matching!
+                item = NormalizedOrderLine.model_validate({
+                    "line_number": line_no, "original_text": orig_text,
+                    "product_phrase": phrase, "quantity": qty, "unit": unit,
+                    "raw_unit": raw_unit, "unit_explicit": unit_explicit,
+                })
+                if item.line_number in seen_line_numbers:
+                    raise ValueError(f"Duplicate line number {item.line_number}")
+                seen_line_numbers.add(item.line_number)
+                if normalize_text(item.original_text) not in normalize_text(raw_input):
+                    raise ValueError(f"Line {item.line_number} is not present in raw order text")
+                if not is_quantity_grounded_in_span(
+                    item.quantity, item.original_text, raw_input, item.product_phrase
+                ) or not is_unit_grounded_in_span(
+                    item.unit, item.raw_unit, item.unit_explicit,
+                    item.original_text, raw_input, item.product_phrase
+                ):
+                    raise ValueError(f"Line {item.line_number} quantity or unit is not grounded in raw order text")
+
+                # Server-owned re-matching.
                 matched_line = MatchingEngine.match_line(
                     db=db,
                     company_id=payload.company_id,
                     customer_id=payload.customer_id,
-                    line_number=line_no,
-                    original_text=orig_text,
-                    product_phrase=phrase,
-                    quantity=qty,
-                    unit=unit,
-                    raw_unit=raw_unit,
-                    unit_explicit=unit_explicit
+                    line_number=item.line_number,
+                    original_text=item.original_text,
+                    product_phrase=item.product_phrase,
+                    quantity=item.quantity,
+                    unit=item.unit,
+                    raw_unit=item.raw_unit,
+                    unit_explicit=item.unit_explicit
                 )
                 extracted_lines.append(matched_line)
         else:
@@ -271,15 +334,22 @@ async def create_order_from_match_endpoint(
                 )
                 extracted_lines.append(res)
 
-        order = OrderWorkflowService.create_order_from_match(
-            db=db,
-            company_id=payload.company_id,
-            customer_id=payload.customer_id,
-            raw_input=raw_input,
-            lines=extracted_lines,
-            order_number=payload.order_number,
-            idempotency_key=eff_idempotency_key
-        )
+        try:
+            order = OrderWorkflowService.create_order_from_match(
+                db=db, company_id=payload.company_id, customer_id=payload.customer_id,
+                raw_input=raw_input, lines=extracted_lines,
+                order_number=payload.order_number,
+                idempotency_key=eff_idempotency_key,
+                idempotency_fingerprint=request_fingerprint,
+            )
+        except IntegrityError:
+            db.rollback()
+            existing_order = existing_for_key()
+            if existing_order:
+                if existing_order.idempotency_fingerprint != request_fingerprint:
+                    raise HTTPException(status_code=409, detail="Idempotency-Key was already used with a different request")
+                return existing_order
+            raise HTTPException(status_code=409, detail="Order number or other unique order identity already exists")
         return order
     except HTTPException:
         raise
@@ -288,8 +358,10 @@ async def create_order_from_match_endpoint(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(ve)
         )
+    except OperationalError:
+        raise
     except Exception as e:
-        logger.exception("Unexpected server error during order creation: %s", str(e))
+        logger.error("Unexpected server error during order creation: %s", type(e).__name__)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="An unexpected internal server error occurred while creating order."
@@ -336,6 +408,8 @@ def approve_order_endpoint(
             pending_review_lines=pending_review_lines,
             unresolved_lines=unresolved_lines
         )
+    except StaleDataError:
+        raise HTTPException(status_code=409, detail="Order was changed concurrently; reload and retry")
     except OrderApprovalError as oae:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -368,6 +442,8 @@ def update_line_final_values_endpoint(
             final_unit=payload.final_unit
         )
         return line
+    except StaleDataError:
+        raise HTTPException(status_code=409, detail="Order was changed concurrently; reload and retry")
     except ValueError as ve:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -438,11 +514,11 @@ def confirm_line_match_endpoint(
                     confirmed_count=alias.confirmed_count if alias else 1,
                     corrected_count=alias.corrected_count if alias else 0
                 )
-            elif not order and not line:
-                # Standalone fallback when neither order nor line exist in DB
-                pass
             else:
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Order {eff_order_id} or line {eff_line_id} does not exist or does not belong to order")
+
+        if (eff_order_id is None) != (eff_line_id is None):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="order_id and line_id must be supplied together")
 
         alias = LearningMemoryService.confirm_match(
             db=db,
@@ -452,6 +528,8 @@ def confirm_line_match_endpoint(
             order_id=eff_order_id,
             line_id=eff_line_id
         )
+        db.commit()
+        db.refresh(alias)
         return ConfirmMatchResponse(
             status="confirmed",
             customer_id=alias.customer_id,
@@ -462,13 +540,21 @@ def confirm_line_match_endpoint(
         )
     except HTTPException:
         raise
+    except (StaleDataError, IntegrityError):
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Order or alias was changed concurrently; reload and retry")
+    except ConcurrentAliasError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Customer alias changed concurrently; reload and retry")
     except (AliasConflictError, ValueError) as ve:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(ve)
         )
+    except OperationalError:
+        raise
     except Exception as e:
-        logger.exception("Unexpected server error during match confirmation: %s", str(e))
+        logger.error("Unexpected server error during match confirmation: %s", type(e).__name__)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="An unexpected internal server error occurred while confirming match."
@@ -541,11 +627,11 @@ def correct_line_match_endpoint(
                     order_id=correction.order_id,
                     order_line_id=correction.order_line_id
                 )
-            elif not order and not line:
-                # Standalone fallback when neither order nor line exist in DB
-                pass
             else:
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Order {eff_order_id} or line {eff_line_id} does not exist or does not belong to order")
+
+        if (eff_order_id is None) != (eff_line_id is None):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="order_id and line_id must be supplied together")
 
         correction, alias = LearningMemoryService.correct_match(
             db=db,
@@ -557,6 +643,9 @@ def correct_line_match_endpoint(
             line_id=eff_line_id,
             notes=payload.notes
         )
+        db.commit()
+        db.refresh(correction)
+        db.refresh(alias)
         return CorrectMatchResponse(
             status="corrected",
             correction_id=correction.id,
@@ -571,13 +660,21 @@ def correct_line_match_endpoint(
         )
     except HTTPException:
         raise
+    except (StaleDataError, IntegrityError):
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Order or alias was changed concurrently; reload and retry")
+    except ConcurrentAliasError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Customer alias changed concurrently; reload and retry")
     except ValueError as ve:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(ve)
         )
+    except OperationalError:
+        raise
     except Exception as e:
-        logger.exception("Unexpected server error during match correction: %s", str(e))
+        logger.error("Unexpected server error during match correction: %s", type(e).__name__)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="An unexpected internal server error occurred while correcting match."
@@ -609,6 +706,9 @@ def export_order_endpoint(
                 "Content-Disposition": f'attachment; filename="{filename}"'
             }
         )
+    except StaleDataError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Order was changed concurrently; reload and retry")
     except OrderExportError as oee:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -619,8 +719,10 @@ def export_order_endpoint(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(ve)
         )
+    except OperationalError:
+        raise
     except Exception as e:
-        logger.exception("Unexpected server error during order export: %s", str(e))
+        logger.error("Unexpected server error during order export: %s", type(e).__name__)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="An unexpected internal server error occurred while exporting the order."

@@ -1,67 +1,62 @@
 # OrderMind
 
-> **Intelligent Multi-Channel B2B Order Intake & Matching Platform**
+OrderMind is an early-stage B2B order intake **backend API**. It turns customer order text into reviewable order lines, matches them against a company's own catalog, records operator corrections, and exports approved orders. The catalog and operator decisions are the source of truth; an AI provider extracts text but does not invent products or SKUs.
 
-OrderMind is a platform designed for B2B distributors and wholesalers that receive orders from customers in diverse, unstructured formats (plain text, emails, PDFs, images, Excel, spreadsheets, etc.). 
+There is no web frontend or `/` homepage yet. Once the server is running, use the interactive API at `http://127.0.0.1:8001/docs`. A 404 at `/` is expected.
 
-The core philosophy of OrderMind is: **AI understands language and extracts intent, but the backend and the real business master data are the single source of truth.**
+## Current scope
 
----
+- Plain-text order input; mock extraction works offline, and Gemini extraction is implemented when configured.
+- Company, customer, product, packaging, and export-profile APIs; Excel imports for master data.
+- Catalog matching using identifiers, aliases, normalized descriptions, and bounded fuzzy candidates; confidence and review states.
+- Operator confirmation/correction, approval with a stored snapshot, and CSV/XLSX/JSON export.
+- SQLite database with Alembic migrations and tenant foreign-key constraints.
 
-## 🎯 Core Philosophy & Processing Pipeline
+PDF/image/email intake, OpenAI/Anthropic/Vertex providers, a frontend, and direct ERP integrations are **planned**, not available in this API. Exported files can be imported into other systems separately.
 
-OrderMind is **not a chatbot**. The LLM never hallucinates or guesses product SKUs directly out of thin air. Instead, the backend drives deterministic catalog filtering, fuzzy matching, historical alias resolution, and unit validation, calling the AI only for natural language extraction and disambiguation among a tight candidate set.
+## First local run (Windows PowerShell)
 
-```text
-INPUT (Plain text, Email, PDF, Image, etc.)
-  ↓
-Input Normalization (Adapter Layer)
-  ↓
-AI Extraction (Entities, Quantities, Unit Phrases)
-  ↓
-Customer Detection (Sender, Phone, Manual selection)
-  ↓
-Product / Quantity / Unit Extraction
-  ↓
-Matching Engine (SKU, Barcodes, Aliases, Fuzzy, Semantic)
-  ↓
-Confidence Scoring & Reason Explanation
-  ↓
-Human Review (Review queue with [Confirm] / [Change])
-  ↓
-SQL Learning Memory (Aliases, Human corrections)
-  ↓
-Final Structured Order
-  ↓
-Configurable Export (Excel, CSV, JSON, ERP integrations)
+Run these commands from the repository root (`C:\OrderMind`). Python 3.12+ and uv are required.
+
+```powershell
+uv sync --frozen
+if (-not (Test-Path -LiteralPath .env)) { Copy-Item .env.example .env }
+.\.venv\Scripts\python.exe -m alembic upgrade head
+.\.venv\Scripts\python.exe -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8001 --no-access-log
 ```
 
----
+Open `http://127.0.0.1:8001/docs`. Check `http://127.0.0.1:8001/health` and `GET /api/v1/companies` to verify the API and database connection. Stop the server with Ctrl+C. Port 8001 avoids the local Astakos service currently using port 8000; choose another free port if needed. The `.env` file is local and ignored by Git; the default `AI_PROVIDER=mock` needs no API key. To use Gemini, set `AI_PROVIDER=gemini`, an appropriate `AI_MODEL`, and `GEMINI_API_KEY` in `.env`, then restart the server.
 
-## 🚀 Key Architectural Pillars
+The `HOST` and `PORT` settings in `.env` do not change the command above; the Uvicorn CLI flags choose the listening address and port. The default `DATABASE_URL=sqlite:///./ordermind.db` is relative to the working directory, so run migrations and the server from the repository root. The API does **not** create or migrate tables at startup.
 
-1. **Deterministic Business Source of Truth**: Customers, Products, Packaging, Units, and Customer-specific Aliases live in a relational SQL database.
-2. **Provider-Agnostic AI Layer**: Abstracted AI provider interface (`AIProvider`) supporting Google Gemini, Vertex AI, OpenAI, Anthropic Claude, and Mock mode for testing.
-3. **Extensible Input Adapters**: Pluggable `InputAdapter` interface (Plain text for MVP; extensible to PDF, Image, Excel, Email without touching core logic).
-4. **Explainable Confidence Scoring**: Every matched item receives a score calculated from deterministic weighted factors (exact SKU, barcode, customer alias, previous confirmations, packaging match) with clear human-readable explanations.
-5. **SQL Learning Memory**:
-   - `CustomerProductAlias`: Customer-specific phrases learned and weighted through usage.
-   - `HumanCorrection`: Complete audit trail of operator corrections to improve future recommendations.
-6. **Configurable Export Profiles**: User-defined output column mappings for Excel, CSV, and JSON (direct ERP import compatibility).
+## Dependencies and tests
 
----
+`pyproject.toml` declares dependencies and `uv.lock` pins their resolution. Use `uv sync --frozen` for a reproducible environment; there is no separate `requirements.txt` to keep in sync.
 
-## 🛠️ Tech Stack (MVP)
+```powershell
+.\.venv\Scripts\python.exe -m pytest backend/tests -q
+.\.venv\Scripts\python.exe -m alembic check
+```
 
-- **Backend**: Python 3.12+ / FastAPI / Pydantic v2 / SQLAlchemy 2.0 / Alembic
-- **Database**: SQLite (local development) / PostgreSQL (production ready via SQLAlchemy)
-- **Data & Excel Processing**: Pandas, OpenPyXL, RapidFuzz
-- **Frontend**: Clean modern Web UI (FastAPI static/SPA)
-- **AI Integrations**: Google Gemini API, OpenAI, Claude, Vertex AI (via modular adapters)
+Tests use temporary databases. They do not require the local `ordermind.db` or a Gemini key.
 
----
+## Database migrations
 
-## 🔒 Security Notice
+For a new database, set `DATABASE_URL` in `.env` and run `alembic upgrade head` before starting the API. Back up any populated database before a future schema upgrade. SQLite files, local `.env` files, and generated test files are ignored by Git.
 
-- No API keys, credentials, or actual business data are ever committed to Git.
-- Always use a local `.env` file copied from `.env.example`.
+OrderMind currently accepts SQLite URLs only. On API startup, a file database is placed in WAL mode; every SQLite connection enables foreign keys and waits at most 5 seconds for a short write lock. A lock that persists past that wait returns HTTP 503 with `Retry-After: 1`. Order edits use optimistic version checks, and alias counters use atomic SQL updates. SQLite still has one writer at a time, so keep write transactions short.
+
+For a future **live** backup, use SQLite's backup API or `VACUUM INTO` on a separate destination file. Do not copy only `ordermind.db` while the API is writing: WAL may hold committed data in `ordermind.db-wal`. There is no automated backup or maintenance job yet. If maintenance becomes necessary, use `PRAGMA integrity_check` for a consistency check, `PRAGMA wal_checkpoint` to inspect/checkpoint WAL, and `VACUUM` for deliberate compaction during a maintenance window. These are operational tools, not commands to run on every startup.
+
+The separate `python -m backend.alembic.upgrade_legacy` command exists only for a database created by the pre-Alembic schema at commit `1cd7f52`. It is **not needed for a new installation**. It rejects legacy approved/exported orders because their historical business values were never snapshotted; those databases need manual review.
+
+## Repository layout
+
+- `backend/app/api/v1/`: HTTP endpoints.
+- `backend/app/services/`: parsing, matching, workflow, learning memory, imports, and exports.
+- `backend/app/models/`: SQLAlchemy models and tenant constraints.
+- `backend/alembic/`: database migrations.
+- `backend/tests/`: automated backend tests.
+- `backend/fixtures/`: synthetic Excel import samples.
+
+See [AGENTS.md](AGENTS.md) for repository working conventions.

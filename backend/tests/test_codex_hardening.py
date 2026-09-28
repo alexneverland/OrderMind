@@ -7,13 +7,14 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.exc import StaleDataError
 
 from backend.app.config import settings
 from backend.app.core.text_normalizer import is_quantity_grounded_in_span, is_unit_grounded_in_span
 from backend.app.models.company import Company
 from backend.app.models.customer import Customer
 from backend.app.models.product import Product, Packaging, ProductAlias
-from backend.app.models.order import Order, OrderLine
+from backend.app.models.order import Order, OrderLine, MatchCandidate
 from backend.app.models.memory import CustomerProductAlias, HumanCorrection
 from backend.app.models.export import ExportProfile, ExportFieldMapping, ExportRecord
 from backend.app.schemas.workflow import OrderStatus, OrderLineStatus
@@ -21,6 +22,7 @@ from backend.app.schemas.matching import LineMatchResult, MatchedProductInfo, Co
 from backend.app.schemas.export import ExportProfileCreate, ExportFieldMappingCreate
 from backend.app.services.order_workflow_service import OrderWorkflowService, OrderApprovalError
 from backend.app.services.order_parsing_service import OrderParsingService
+from backend.app.services.matching_engine import MatchingEngine
 from backend.app.services.export_engine import ExportEngine
 from backend.app.services.export_profile_service import ExportProfileService, ExportProfileValidationError
 from backend.app.services.learning_memory_service import LearningMemoryService
@@ -167,6 +169,13 @@ def test_create_from_match_idempotency_key(client: TestClient, db_session: Sessi
     ).scalars().all()
     assert len(orders) == 1
 
+    conflict = client.post(
+        "/api/v1/orders/create-from-match",
+        json={**payload, "text": "4 καπνιστη"}, headers=headers,
+    )
+    assert conflict.status_code == 409
+    assert db_session.execute(select(Order).where(Order.company_id == comp.id)).scalars().all() == orders
+
 
 # =====================================================================
 # 3. Input Size & Line Limits (100k bytes & 500 lines)
@@ -218,6 +227,10 @@ def test_deterministic_grounding_quantity_and_unit():
     assert is_quantity_grounded_in_span(5.0, "5 κιλα φετα", "5 κιλα φετα") is True
     assert is_quantity_grounded_in_span(5.0, "πεντε κιλα φετα", "πεντε κιλα φετα") is True
     assert is_quantity_grounded_in_span(100.0, "5 κιλα φετα", "5 κιλα φετα") is False
+
+    assert is_quantity_grounded_in_span(2.5, "2,5 κιλά SKU-100", "2,5 κιλά SKU-100", "SKU-100")
+    assert not is_quantity_grounded_in_span(100.0, "2 τεμάχια SKU-100", "2 τεμάχια SKU-100", "SKU-100")
+    assert not is_quantity_grounded_in_span(2.0, "2 κιβώτια 12 τεμάχια SKU-100", "2 κιβώτια 12 τεμάχια SKU-100", "SKU-100")
 
     # Default quantity 1.0 is grounded when no explicit number is present
     assert is_quantity_grounded_in_span(1.0, "γαλοπουλα καπνιστη", "γαλοπουλα καπνιστη") is True
@@ -598,6 +611,69 @@ def test_packaging_unit_matching_and_ambiguity(db_session: Session):
         )
 
 
+def test_initial_matching_resolves_package_code_and_reviews_ambiguous_unit(db_session: Session):
+    data = setup_hardening_data(db_session)
+    product = data["prod_turkey"]
+    first = Packaging(product_id=product.id, package_code="BOX-12", package_type="box",
+                      pieces_per_case=12, unit="case")
+    db_session.add(first)
+    db_session.commit()
+
+    matched = MatchingEngine.match_line(
+        db_session, data["company"].id, data["customer"].id, 1,
+        "2 BOX-12", "BOX-12", 2, "piece", unit_explicit=False,
+    )
+    assert matched.best_match.product_id == product.id
+    assert matched.matched_packaging_id == first.id
+    assert matched.final_unit == "case"
+
+    db_session.add(Packaging(product_id=product.id, package_code="BOX-24", package_type="box",
+                             pieces_per_case=24, unit="case"))
+    db_session.commit()
+    db_session.expire_all()
+    exact = MatchingEngine.match_line(
+        db_session, data["company"].id, data["customer"].id, 1,
+        "2 BOX-12", "BOX-12", 2, "piece", unit_explicit=False,
+    )
+    assert exact.matched_packaging_id == first.id
+    exact_order = OrderWorkflowService.create_order_from_match(
+        db_session, data["company"].id, data["customer"].id, "2 BOX-12", [exact],
+    )
+    OrderWorkflowService.approve_order(db_session, exact_order.id)
+
+    ambiguous = MatchingEngine.match_line(
+        db_session, data["company"].id, data["customer"].id, 1,
+        "2 κιβώτια καπνιστη", "καπνιστη", 2, "case", raw_unit="κιβώτια", unit_explicit=True,
+    )
+    assert ambiguous.confidence.decision == MatchDecision.NEEDS_REVIEW
+    assert ambiguous.matched_packaging_id is None
+
+
+def test_product_correction_preserves_requested_case_unit(db_session: Session):
+    data = setup_hardening_data(db_session)
+    salami = data["prod_salami"]
+    packaging = Packaging(product_id=salami.id, package_type="case", unit="case", pieces_per_case=12)
+    db_session.add(packaging)
+    db_session.commit()
+    line_result = LineMatchResult(
+        line_number=1, original_text="2 κιβώτια σαλάμι", product_phrase="σαλάμι",
+        quantity=2, unit="case", raw_unit="κιβώτια", unit_explicit=True,
+        best_match=MatchedProductInfo(product_id=data["prod_turkey"].id,
+                                      sku=data["prod_turkey"].sku,
+                                      description=data["prod_turkey"].description,
+                                      unit="piece"),
+        confidence=ConfidenceResult(score=0.5, decision=MatchDecision.NEEDS_REVIEW),
+    )
+    order = OrderWorkflowService.create_order_from_match(
+        db_session, data["company"].id, data["customer"].id,
+        "2 κιβώτια σαλάμι", [line_result],
+    )
+    _, corrected = OrderWorkflowService.correct_line(db_session, order.id, order.lines[0].id, salami.id)
+    assert corrected.final_unit == "case"
+    assert corrected.matched_packaging_id == packaging.id
+    assert corrected.status == OrderLineStatus.CORRECTED.value
+
+
 # =====================================================================
 # 10. Formula Injection Escaping: CSV/XLSX Escaped, JSON Untouched
 # =====================================================================
@@ -920,16 +996,84 @@ def test_multi_tenant_foreign_key_isolation(db_session: Session):
         db_session.commit()
     db_session.rollback()
 
-    # 2. Attempting to create ProductAlias for Company B referencing Product A from Company A
-    # Foreign key constraint fk_product_alias_product_company enforces (product_id, company_id) -> products(id, company_id)
+    # ProductAlias must also stay within its company.
     with pytest.raises(IntegrityError):
-        alias_cross = ProductAlias(
-            company_id=company_b.id,
-            product_id=prod_a.id,
-            original_phrase="cross alias",
-            normalized_phrase="cross alias",
-            active=True
-        )
-        db_session.add(alias_cross)
+        db_session.add(ProductAlias(
+            company_id=company_b.id, product_id=prod_a.id,
+            original_phrase="cross alias", normalized_phrase="cross alias", active=True
+        ))
         db_session.commit()
     db_session.rollback()
+
+
+def test_tenant_constraints_cover_child_business_references(db_session: Session):
+    company_a = Company(name="Tenant A")
+    company_b = Company(name="Tenant B")
+    db_session.add_all([company_a, company_b])
+    db_session.flush()
+    customer_b = Customer(company_id=company_b.id, customer_code="B", customer_name="Buyer B")
+    product_a = Product(company_id=company_a.id, sku="A", description="Product A", unit="piece")
+    product_b = Product(company_id=company_b.id, sku="B", description="Product B", unit="piece")
+    profile_a = ExportProfile(company_id=company_a.id, name="Profile A", format="json")
+    db_session.add_all([customer_b, product_a, product_b, profile_a])
+    db_session.flush()
+    order_b = Order(company_id=company_b.id, customer_id=customer_b.id, order_number="B-1", raw_input="one")
+    db_session.add(order_b)
+    db_session.flush()
+    line_b = OrderLine(order_id=order_b.id, company_id=company_b.id, line_number=1,
+                       original_text="one", product_phrase="one", requested_quantity=1,
+                       requested_unit="piece", matched_product_id=product_b.id)
+    db_session.add(line_b)
+    db_session.commit()
+
+    invalid_rows = [
+        Packaging(company_id=company_b.id, product_id=product_a.id, package_type="case", pieces_per_case=12),
+        CustomerProductAlias(company_id=company_b.id, customer_id=customer_b.id,
+                             product_id=product_a.id, original_phrase="wrong", normalized_phrase="wrong"),
+        OrderLine(company_id=company_b.id, order_id=order_b.id, line_number=2,
+                  original_text="wrong", product_phrase="wrong", requested_quantity=1,
+                  requested_unit="piece", matched_product_id=product_a.id),
+        MatchCandidate(company_id=company_b.id, order_line_id=line_b.id, product_id=product_a.id,
+                       rank=1, match_type="exact_sku", score=1, explanation="wrong"),
+        HumanCorrection(company_id=company_b.id, customer_id=customer_b.id,
+                        correct_product_id=product_a.id, original_phrase="wrong"),
+        ExportRecord(company_id=company_b.id, order_id=order_b.id, export_profile_id=profile_a.id,
+                     format="json", filename="wrong.json"),
+    ]
+    for row in invalid_rows:
+        with pytest.raises(IntegrityError):
+            db_session.add(row)
+            db_session.commit()
+        db_session.rollback()
+
+    order_b.last_export_profile_id = profile_a.id
+    with pytest.raises(IntegrityError):
+        db_session.commit()
+    db_session.rollback()
+
+
+def test_order_version_rejects_stale_operator_write(db_session: Session, test_engine):
+    data = setup_hardening_data(db_session)
+    order = Order(company_id=data["company"].id, customer_id=data["customer"].id,
+                  order_number="VERSION-1", raw_input="one")
+    db_session.add(order)
+    db_session.commit()
+
+    first = Session(test_engine)
+    second = Session(test_engine)
+    try:
+        first_order = first.get(Order, order.id)
+        second_order = second.get(Order, order.id)
+        first_order.version += 1
+        first_order.status = OrderStatus.PENDING_REVIEW.value
+        first.commit()
+        second_order.version += 1
+        second_order.status = OrderStatus.CANCELLED.value
+        with pytest.raises(StaleDataError):
+            second.commit()
+        second.rollback()
+        db_session.expire_all()
+        assert db_session.get(Order, order.id).status == OrderStatus.PENDING_REVIEW.value
+    finally:
+        first.close()
+        second.close()

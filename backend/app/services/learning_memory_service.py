@@ -1,7 +1,7 @@
 from typing import Optional, Tuple
 from datetime import datetime, timezone
 from sqlalchemy.orm import Session
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from backend.app.models.customer import Customer
 from backend.app.models.product import Product
@@ -12,6 +12,11 @@ from backend.app.core.text_normalizer import normalize_text
 
 class AliasConflictError(ValueError):
     """Raised when confirm_match encounters an existing customer alias pointing to a different product."""
+    pass
+
+
+class ConcurrentAliasError(RuntimeError):
+    """The alias mapping changed after it was read."""
     pass
 
 
@@ -90,7 +95,6 @@ class LearningMemoryService:
         original_phrase: str,
         order_id: Optional[int] = None,
         line_id: Optional[int] = None,
-        commit: bool = True
     ) -> CustomerProductAlias:
         """
         Confirms a match for a customer:
@@ -116,6 +120,8 @@ class LearningMemoryService:
         if not norm_phrase:
             raise ValueError("Original phrase cannot be empty")
 
+        cls._validate_order_context(db, customer, order_id=order_id, line_id=line_id)
+
         stmt = select(CustomerProductAlias).where(
             CustomerProductAlias.customer_id == customer_id,
             CustomerProductAlias.normalized_phrase == norm_phrase
@@ -127,9 +133,18 @@ class LearningMemoryService:
                 raise AliasConflictError(
                     "Existing customer alias points to a different product. Use correct_match() to change the mapping."
                 )
-            alias.confirmed_count += 1
-            alias.last_confirmed_at = datetime.now(timezone.utc)
-            alias.active = True
+            result = db.execute(
+                update(CustomerProductAlias)
+                .where(CustomerProductAlias.id == alias.id, CustomerProductAlias.product_id == product_id)
+                .values(
+                    confirmed_count=CustomerProductAlias.confirmed_count + 1,
+                    last_confirmed_at=datetime.now(timezone.utc),
+                    active=True,
+                )
+            )
+            if result.rowcount != 1:
+                raise ConcurrentAliasError("Customer alias changed concurrently; reload and retry")
+            db.refresh(alias)
         else:
             alias = CustomerProductAlias(
                 customer_id=customer_id,
@@ -143,17 +158,9 @@ class LearningMemoryService:
             )
             db.add(alias)
 
-        if commit:
-            try:
-                db.commit()
-                db.refresh(alias)
-                return alias
-            except Exception:
-                db.rollback()
-                raise
-        else:
-            db.flush()
-            return alias
+        db.flush()
+        db.refresh(alias)
+        return alias
 
     @classmethod
     def correct_match(
@@ -166,7 +173,6 @@ class LearningMemoryService:
         order_id: Optional[int] = None,
         line_id: Optional[int] = None,
         notes: Optional[str] = None,
-        commit: bool = True
     ) -> Tuple[HumanCorrection, CustomerProductAlias]:
         """
         Atomically records an operator correction:
@@ -226,14 +232,24 @@ class LearningMemoryService:
             alias = db.execute(stmt).scalar_one_or_none()
 
             if alias:
-                if alias.product_id != correct_product_id:
-                    alias.product_id = correct_product_id
-                    alias.confirmed_count = 1  # Reset to 1 for the newly mapped product!
-                    alias.corrected_count += 1
-                else:
-                    alias.corrected_count += 1
-                alias.last_confirmed_at = datetime.now(timezone.utc)
-                alias.active = True
+                previous_product_id = alias.product_id
+                result = db.execute(
+                    update(CustomerProductAlias)
+                    .where(
+                        CustomerProductAlias.id == alias.id,
+                        CustomerProductAlias.product_id == previous_product_id,
+                    )
+                    .values(
+                        product_id=correct_product_id,
+                        confirmed_count=(1 if previous_product_id != correct_product_id
+                                         else CustomerProductAlias.confirmed_count),
+                        corrected_count=CustomerProductAlias.corrected_count + 1,
+                        last_confirmed_at=datetime.now(timezone.utc),
+                        active=True,
+                    )
+                )
+                if result.rowcount != 1:
+                    raise ConcurrentAliasError("Customer alias changed concurrently; reload and retry")
             else:
                 alias = CustomerProductAlias(
                     customer_id=customer_id,
@@ -247,16 +263,9 @@ class LearningMemoryService:
                 )
                 db.add(alias)
 
-            if commit:
-                db.commit()
-                db.refresh(correction)
-                db.refresh(alias)
-                return correction, alias
-            else:
-                db.flush()
-                return correction, alias
+            db.flush()
+            db.refresh(correction)
+            db.refresh(alias)
+            return correction, alias
         except Exception:
-            if commit:
-                db.rollback()
             raise
-

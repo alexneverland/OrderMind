@@ -177,13 +177,13 @@ def is_grounded_in_input(fragment: str, raw_input: str) -> bool:
 
 
 def extract_numbers_from_text(text: str) -> List[float]:
-    """Extracts numeric values from digit sequences and common number words."""
+    """Extract standalone quantities, excluding digits embedded in SKUs or measures."""
     if not text:
         return []
     norm = normalize_text(text)
     numbers = []
 
-    matches = re.findall(r"\b\d+(?:[.,]\d+)?\b", text)
+    matches = re.findall(r"(?<![\w/-])\d+(?:[.,]\d+)?(?![\w/-])", text)
     for m in matches:
         try:
             numbers.append(float(m.replace(",", ".")))
@@ -204,25 +204,26 @@ def extract_numbers_from_text(text: str) -> List[float]:
     return numbers
 
 
-def is_quantity_grounded_in_span(quantity: float, text_span: str, raw_input: str) -> bool:
+def _without_product_phrase(text_span: str, product_phrase: Optional[str]) -> str:
+    if not product_phrase:
+        return text_span
+    return re.sub(re.escape(product_phrase.strip()), " ", text_span, count=1, flags=re.IGNORECASE)
+
+
+def is_quantity_grounded_in_span(
+    quantity: float, text_span: str, raw_input: str, product_phrase: Optional[str] = None
+) -> bool:
     """
-    Verifies that the extracted numerical quantity is grounded in the text span or input.
+    Verifies that the extracted numerical quantity is grounded in the verbatim text span.
     - If the text span contains explicit digits/numbers: the extracted quantity must match one of them.
     - If no numbers are present in the text span: a quantity of 1.0 (default implicit quantity) is acceptable.
     - If provider hallucinated an arbitrary quantity (e.g. text has '2' but provider returns 20): returns False.
     """
-    span_numbers = extract_numbers_from_text(text_span)
+    span_numbers = extract_numbers_from_text(_without_product_phrase(text_span, product_phrase))
     if span_numbers:
-        return any(abs(quantity - n) < 1e-4 for n in span_numbers)
-
-    input_numbers = extract_numbers_from_text(raw_input)
-    if any(abs(quantity - n) < 1e-4 for n in input_numbers):
-        return True
-
-    if not span_numbers and quantity == 1.0:
-        return True
-
-    return False
+        # Multiple plausible quantities in one span require human review.
+        return len(span_numbers) == 1 and abs(quantity - span_numbers[0]) < 1e-4
+    return quantity == 1.0
 
 
 def is_unit_grounded_in_span(
@@ -230,34 +231,38 @@ def is_unit_grounded_in_span(
     raw_unit: Optional[str],
     unit_explicit: bool,
     text_span: str,
-    raw_input: str
+    raw_input: str,
+    product_phrase: Optional[str] = None,
 ) -> bool:
     """
     Verifies that an extracted unit is grounded in the customer's text.
     - If unit_explicit is True:
-      - raw_unit must appear in the text_span or raw_input.
+      - raw_unit must appear in the text_span outside the product phrase.
       - If input specifies a conflicting unit (e.g. 'cases' while extracted is 'kg'), it is rejected.
     - If unit_explicit is False:
       - Valid default when customer didn't specify a unit.
     """
+    remaining_span = _without_product_phrase(text_span, product_phrase)
+    normalized_span = normalize_text(remaining_span)
+    span_tokens = normalized_span.split()
+    explicit_units = {UNIT_MAPPING[token] for token in span_tokens if token in UNIT_MAPPING}
+
     if not unit_explicit:
-        return True
+        return not explicit_units and unit == "piece" and not raw_unit
 
     if not raw_unit or not raw_unit.strip():
         return False
 
     norm_raw_unit = normalize_text(raw_unit)
-    norm_span = normalize_text(text_span)
-    norm_input = normalize_text(raw_input)
+    raw_tokens = norm_raw_unit.split()
+    if not raw_tokens or len(raw_tokens) > len(span_tokens):
+        return False
+    if not any(span_tokens[i:i + len(raw_tokens)] == raw_tokens
+               for i in range(len(span_tokens) - len(raw_tokens) + 1)):
+        return False
 
-    if norm_raw_unit in norm_span or norm_raw_unit in norm_input:
-        return True
-
-    unit_norm = normalize_text(unit)
-    if unit_norm in norm_span or unit_norm in norm_input:
-        return True
-
-    return False
+    canonical, _, _ = resolve_unit(raw_unit)
+    return canonical == unit and (not explicit_units or explicit_units == {unit})
 
 
 GREEK_STEM_ENDINGS = [
@@ -288,4 +293,3 @@ def stem_phrase(phrase: Optional[str]) -> str:
         return ""
     norm = normalize_text(phrase)
     return " ".join(greek_stem(w) for w in norm.split())
-

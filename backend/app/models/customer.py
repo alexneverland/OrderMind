@@ -23,14 +23,14 @@ class Customer(Base):
     # Relationships
     company = relationship("Company", back_populates="customers")
     contacts = relationship("CustomerContact", back_populates="customer", cascade="all, delete-orphan")
-    aliases = relationship("CustomerProductAlias", back_populates="customer", cascade="all, delete-orphan")
+    aliases = relationship("CustomerProductAlias", back_populates="customer", cascade="all, delete-orphan", foreign_keys="CustomerProductAlias.customer_id")
     orders = relationship(
         "Order",
         back_populates="customer",
         primaryjoin="and_(Customer.id==Order.customer_id, Customer.company_id==Order.company_id)",
         overlaps="company,orders"
     )
-    corrections = relationship("HumanCorrection", back_populates="customer", cascade="all, delete-orphan")
+    corrections = relationship("HumanCorrection", back_populates="customer", cascade="all, delete-orphan", foreign_keys="HumanCorrection.customer_id")
 
 
 class CustomerContact(Base):

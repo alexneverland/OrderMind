@@ -5,11 +5,11 @@ from typing import Optional
 
 class Settings(BaseSettings):
     APP_ENV: str = Field(default="development", description="Environment mode")
-    APP_DEBUG: bool = Field(default=True, description="Debug mode")
+    APP_DEBUG: bool = Field(default=False, description="Debug mode")
     PORT: int = Field(default=8000, description="Server port")
     HOST: str = Field(default="0.0.0.0", description="Server host")
 
-    # Database: SQLite by default for development, ready for PostgreSQL/MySQL
+    # Local database: SQLite
     DATABASE_URL: str = Field(
         default="sqlite:///./ordermind.db",
         description="Database connection URL"
@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     # Input validation limits
     MAX_RAW_ORDER_TEXT_SIZE: int = Field(default=50000, description="Max raw text size in characters")
     MAX_ORDER_LINES: int = Field(default=500, description="Max lines allowed per order")
+    MAX_IMPORT_UPLOAD_SIZE_BYTES: int = Field(default=10_000_000, description="Maximum Excel upload size")
 
     model_config = SettingsConfigDict(
         env_file=".env",

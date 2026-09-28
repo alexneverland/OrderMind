@@ -7,7 +7,7 @@ class NormalizedOrderLineDraft(BaseModel):
     """Extraction draft item produced by AI or mock parser."""
     original_text: str = Field(..., description="Verbatim fragment from input representing this item")
     product_phrase: str = Field(..., description="Extracted product description or keyword phrase without quantities/units")
-    quantity: float = Field(..., gt=0, description="Requested quantity, must be positive")
+    quantity: float = Field(..., gt=0, allow_inf_nan=False, description="Requested quantity, must be positive")
     unit: str = Field(default="piece", description="Normalized packaging or unit of measure: piece, case, kg, pallet, unknown")
     raw_unit: Optional[str] = Field(default=None, description="Verbatim unit as mentioned in input")
     unit_explicit: bool = Field(default=False, description="Whether unit was explicitly mentioned in input")
@@ -25,7 +25,7 @@ class NormalizedOrderLine(BaseModel):
     line_number: int = Field(..., ge=1, description="Sequential line number starting at 1")
     original_text: str = Field(..., description="Verbatim line or segment from input")
     product_phrase: str = Field(..., description="Product phrase requested by customer")
-    quantity: float = Field(..., gt=0, description="Quantity")
+    quantity: float = Field(..., gt=0, allow_inf_nan=False, description="Quantity")
     unit: str = Field(default="piece", description="Canonical unit: piece, case, kg, pallet, unknown")
     raw_unit: Optional[str] = Field(default=None, description="Verbatim unit as mentioned in input")
     unit_explicit: bool = Field(default=False, description="Whether unit was explicitly mentioned in input")

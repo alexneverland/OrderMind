@@ -498,16 +498,20 @@ def test_update_line_final_values_excludes_product_mutation(db_session):
     )
     line_id = order.lines[0].id
 
-    # Mutating quantity and unit is allowed before approval
+    # Quantity can be changed, but unsupported units cannot be assigned.
+    with pytest.raises(ValueError, match="Invalid packaging"):
+        OrderWorkflowService.update_line_final_values(
+            db=db_session, order_id=order.id, line_id=line_id, final_unit="kg"
+        )
     updated = OrderWorkflowService.update_line_final_values(
         db=db_session,
         order_id=order.id,
         line_id=line_id,
         final_quantity=15.0,
-        final_unit="kg"
+        final_unit="piece"
     )
     assert updated.final_quantity == 15.0
-    assert updated.final_unit == "kg"
+    assert updated.final_unit == "piece"
     # Product remains unchanged
     assert updated.matched_product_id == prod1.id
     assert updated.final_sku == prod1.sku
@@ -581,4 +585,3 @@ def test_winning_match_candidate_persisted_as_rank_1(db_session):
     assert alt.product_id == prod2.id
     assert alt.score == 0.72
     assert alt.match_type == "fuzzy_description"
-

@@ -84,7 +84,7 @@ class OrderApprovalResponse(BaseModel):
 
 
 class OrderLineUpdateValuesRequest(BaseModel):
-    final_quantity: Optional[float] = Field(default=None, gt=0)
+    final_quantity: Optional[float] = Field(default=None, gt=0, allow_inf_nan=False)
     final_unit: Optional[str] = None
 
 

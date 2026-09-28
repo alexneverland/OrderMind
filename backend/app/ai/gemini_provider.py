@@ -52,10 +52,7 @@ class GeminiProvider(BaseAIProvider):
 
     def _get_client(self):
         if not self.api_key:
-            raise ValueError(
-                "GEMINI_API_KEY is not configured. "
-                "Please configure GEMINI_API_KEY in your local .env file."
-            )
+            raise RuntimeError("AI extraction provider is unavailable")
         if self._client is None:
             from google import genai
             self._client = genai.Client(api_key=self.api_key)
@@ -116,7 +113,7 @@ class GeminiProvider(BaseAIProvider):
                 logger.warning(
                     "Gemini async extraction attempt %d failed: %s",
                     attempt + 1,
-                    str(e)
+                    type(e).__name__
                 )
 
-        raise ValueError(f"Gemini order extraction failed after {max_retries} attempts: {str(last_error)}")
+        raise RuntimeError("AI extraction provider is unavailable") from last_error

@@ -25,7 +25,9 @@ class Order(Base):
     __table_args__ = (
         UniqueConstraint("company_id", "order_number", name="uq_company_order_number"),
         UniqueConstraint("company_id", "idempotency_key", name="uq_company_idempotency_key"),
+        UniqueConstraint("id", "company_id", name="uq_orders_id_company_id"),
         ForeignKeyConstraint(["customer_id", "company_id"], ["customers.id", "customers.company_id"], ondelete="RESTRICT", name="fk_order_customer_company"),
+        ForeignKeyConstraint(["last_export_profile_id", "company_id"], ["export_profiles.id", "export_profiles.company_id"], ondelete="RESTRICT", name="fk_order_export_profile_company"),
     )
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
@@ -34,7 +36,9 @@ class Order(Base):
     order_source_id = Column(Integer, ForeignKey("order_sources.id", ondelete="SET NULL"), nullable=True, index=True)
     order_number = Column(String(100), nullable=False, index=True)
     idempotency_key = Column(String(100), nullable=True, index=True)
+    idempotency_fingerprint = Column(String(64), nullable=True)
     version = Column(Integer, default=1, nullable=False)  # Optimistic concurrency version
+    __mapper_args__ = {"version_id_col": version, "version_id_generator": False}
     status = Column(String(50), nullable=False, default="pending_review")  # draft, processing, pending_review, approved, exported, cancelled
     overall_confidence = Column(Float, default=0.0, nullable=False)
     raw_input = Column(Text, nullable=False)
@@ -54,16 +58,24 @@ class Order(Base):
         overlaps="company,orders"
     )
     order_source = relationship("OrderSource", back_populates="orders")
-    lines = relationship("OrderLine", back_populates="order", cascade="all, delete-orphan", order_by="OrderLine.line_number")
-    corrections = relationship("HumanCorrection", back_populates="order")
-    last_export_profile = relationship("ExportProfile")
-    export_records = relationship("ExportRecord", back_populates="order", cascade="all, delete-orphan", order_by="desc(ExportRecord.created_at)")
+    lines = relationship("OrderLine", back_populates="order", cascade="all, delete-orphan", order_by="OrderLine.line_number", foreign_keys="OrderLine.order_id")
+    corrections = relationship("HumanCorrection", back_populates="order", foreign_keys="HumanCorrection.order_id")
+    last_export_profile = relationship("ExportProfile", foreign_keys=[last_export_profile_id])
+    export_records = relationship("ExportRecord", back_populates="order", cascade="all, delete-orphan", order_by="desc(ExportRecord.created_at)", foreign_keys="ExportRecord.order_id")
 
 
 class OrderLine(Base):
     __tablename__ = "order_lines"
+    __table_args__ = (
+        UniqueConstraint("id", "company_id", name="uq_order_lines_id_company_id"),
+        UniqueConstraint("order_id", "line_number", name="uq_order_line_number"),
+        ForeignKeyConstraint(["order_id", "company_id"], ["orders.id", "orders.company_id"], ondelete="CASCADE", name="fk_order_line_order_company"),
+        ForeignKeyConstraint(["matched_product_id", "company_id"], ["products.id", "products.company_id"], ondelete="RESTRICT", name="fk_order_line_product_company"),
+        ForeignKeyConstraint(["matched_packaging_id", "company_id"], ["packagings.id", "packagings.company_id"], ondelete="RESTRICT", name="fk_order_line_packaging_company"),
+    )
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    company_id = Column(Integer, nullable=False, index=True)
     order_id = Column(Integer, ForeignKey("orders.id", ondelete="CASCADE"), nullable=False, index=True)
     line_number = Column(Integer, nullable=False)
     original_text = Column(String(500), nullable=False)
@@ -86,17 +98,22 @@ class OrderLine(Base):
     status = Column(String(50), default="needs_review", nullable=False)  # auto_accepted, needs_review, confirmed, corrected, unresolved
 
     # Relationships
-    order = relationship("Order", back_populates="lines")
-    matched_product = relationship("Product")
-    matched_packaging = relationship("Packaging")
-    candidates = relationship("MatchCandidate", back_populates="order_line", cascade="all, delete-orphan", order_by="MatchCandidate.rank")
-    corrections = relationship("HumanCorrection", back_populates="order_line")
+    order = relationship("Order", back_populates="lines", foreign_keys=[order_id])
+    matched_product = relationship("Product", foreign_keys=[matched_product_id])
+    matched_packaging = relationship("Packaging", foreign_keys=[matched_packaging_id])
+    candidates = relationship("MatchCandidate", back_populates="order_line", cascade="all, delete-orphan", order_by="MatchCandidate.rank", foreign_keys="MatchCandidate.order_line_id")
+    corrections = relationship("HumanCorrection", back_populates="order_line", foreign_keys="HumanCorrection.order_line_id")
 
 
 class MatchCandidate(Base):
     __tablename__ = "match_candidates"
+    __table_args__ = (
+        ForeignKeyConstraint(["order_line_id", "company_id"], ["order_lines.id", "order_lines.company_id"], ondelete="CASCADE", name="fk_match_candidate_line_company"),
+        ForeignKeyConstraint(["product_id", "company_id"], ["products.id", "products.company_id"], ondelete="RESTRICT", name="fk_match_candidate_product_company"),
+    )
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    company_id = Column(Integer, nullable=False, index=True)
     order_line_id = Column(Integer, ForeignKey("order_lines.id", ondelete="CASCADE"), nullable=False, index=True)
     product_id = Column(Integer, ForeignKey("products.id", ondelete="CASCADE"), nullable=False, index=True)
     rank = Column(Integer, nullable=False)
@@ -105,5 +122,5 @@ class MatchCandidate(Base):
     explanation = Column(String(500), nullable=False)
 
     # Relationships
-    order_line = relationship("OrderLine", back_populates="candidates")
-    product = relationship("Product")
+    order_line = relationship("OrderLine", back_populates="candidates", foreign_keys=[order_line_id])
+    product = relationship("Product", foreign_keys=[product_id])

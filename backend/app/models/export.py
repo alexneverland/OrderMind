@@ -1,10 +1,11 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, func
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, ForeignKeyConstraint, UniqueConstraint, func
 from sqlalchemy.orm import relationship
 from backend.app.core.database import Base
 
 
 class ExportProfile(Base):
     __tablename__ = "export_profiles"
+    __table_args__ = (UniqueConstraint("id", "company_id", name="uq_export_profiles_id_company_id"),)
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     company_id = Column(Integer, ForeignKey("companies.id", ondelete="CASCADE"), nullable=False, index=True)
@@ -38,8 +39,13 @@ class ExportFieldMapping(Base):
 class ExportRecord(Base):
     """Audit record for every generated order export file."""
     __tablename__ = "export_records"
+    __table_args__ = (
+        ForeignKeyConstraint(["order_id", "company_id"], ["orders.id", "orders.company_id"], ondelete="CASCADE", name="fk_export_record_order_company"),
+        ForeignKeyConstraint(["export_profile_id", "company_id"], ["export_profiles.id", "export_profiles.company_id"], ondelete="RESTRICT", name="fk_export_record_profile_company"),
+    )
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    company_id = Column(Integer, nullable=False, index=True)
     order_id = Column(Integer, ForeignKey("orders.id", ondelete="CASCADE"), nullable=False, index=True)
     export_profile_id = Column(Integer, ForeignKey("export_profiles.id", ondelete="SET NULL"), nullable=True, index=True)
     format = Column(String(50), nullable=False)
@@ -48,5 +54,5 @@ class ExportRecord(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     # Relationships
-    order = relationship("Order", back_populates="export_records")
-    export_profile = relationship("ExportProfile")
+    order = relationship("Order", back_populates="export_records", foreign_keys=[order_id])
+    export_profile = relationship("ExportProfile", foreign_keys=[export_profile_id])

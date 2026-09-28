@@ -27,7 +27,7 @@ from backend.app.services.export_engine import (
 )
 
 
-def setup_export_data(db_session: Session):
+def setup_export_data(db_session: Session, empty_master_fields: bool = False):
     company = Company(name="Hellas Food Logistics")
     db_session.add(company)
     db_session.flush()
@@ -36,13 +36,14 @@ def setup_export_data(db_session: Session):
         company_id=company.id,
         customer_code="CUST-100",
         customer_name="Grand Hotel Athens",
-        email="orders@grandhotel.gr"
+        email="orders@grandhotel.gr",
+        phone=None if empty_master_fields else "2100000000"
     )
     prod1 = Product(
         company_id=company.id,
         sku="SKU-7843",
         description="Γαλοπούλα Καπνιστή 1kg",
-        barcode="5201234567890",
+        barcode=None if empty_master_fields else "5201234567890",
         unit="piece",
         active=True
     )
@@ -196,6 +197,40 @@ def test_export_xlsx(db_session):
     assert order.status == OrderStatus.EXPORTED.value
     assert order.exported_at is not None
     assert order.last_export_profile_id == profile.id
+
+
+def test_reexport_uses_approved_snapshot_including_empty_master_fields(db_session):
+    data = setup_export_data(db_session, empty_master_fields=True)
+    order = data["order"]
+    customer = data["customer"]
+    product = data["prod1"]
+    profile = ExportProfileService.create_profile(
+        db=db_session,
+        payload=ExportProfileCreate(
+            company_id=data["company"].id,
+            name="Snapshot JSON",
+            format="json",
+            mappings=[
+                ExportFieldMappingCreate(column_order=1, output_column_name="customer", source_field="customer.customer_code"),
+                ExportFieldMappingCreate(column_order=2, output_column_name="phone", source_field="customer.phone"),
+                ExportFieldMappingCreate(column_order=3, output_column_name="sku", source_field="product.sku"),
+                ExportFieldMappingCreate(column_order=4, output_column_name="description", source_field="product.description"),
+                ExportFieldMappingCreate(column_order=5, output_column_name="barcode", source_field="product.barcode"),
+            ],
+        ),
+    )
+    first, _, _ = ExportEngine.export_order(db_session, order.id, profile.id)
+    customer.customer_code = "CHANGED"
+    customer.phone = "999"
+    product.sku = "CHANGED-SKU"
+    product.description = "Changed description"
+    product.barcode = "999999"
+    db_session.commit()
+    second, _, _ = ExportEngine.export_order(db_session, order.id, profile.id)
+    assert json.loads(first) == json.loads(second)
+    row = json.loads(second)[0]
+    assert row == {"customer": "CUST-100", "phone": "", "sku": "SKU-7843", "description": "Γαλοπούλα Καπνιστή 1kg", "barcode": ""}
+    assert len(order.export_records) == 2
 
 
 def test_export_csv(db_session):
@@ -467,4 +502,3 @@ def test_export_header_formula_injection_sanitization(db_session):
     assert "+SUM_COL" in stored_names
     assert "-DIFF_COL" in stored_names
     assert "@USER_COL" in stored_names
-

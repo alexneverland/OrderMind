@@ -1,6 +1,7 @@
 from logging.config import fileConfig
 
 from sqlalchemy import engine_from_config
+from sqlalchemy.engine import make_url
 from sqlalchemy import pool
 
 from alembic import context
@@ -33,8 +34,10 @@ from backend.app.models import (
 
 target_metadata = Base.metadata
 
-if not config.get_main_option("sqlalchemy.url"):
-    config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+database_url = context.get_x_argument(as_dictionary=True).get("db_url", settings.DATABASE_URL)
+if make_url(database_url).get_backend_name() != "sqlite":
+    raise ValueError("OrderMind migrations currently support SQLite databases only")
+config.set_main_option("sqlalchemy.url", database_url)
 
 # other values from the config, defined by the needs of env.py,
 # can be acquired:

@@ -1,14 +1,23 @@
 import json
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import OperationalError
 from typing import Dict, Any
 
 from backend.app.core.database import get_db
+from backend.app.config import settings
 from backend.app.models.company import Company
 from backend.app.schemas.imports import HeaderPreviewResponse, ImportSummaryResponse
 from backend.app.services.master_data_service import MasterDataService
 
 router = APIRouter(prefix="/imports", tags=["Master Data Imports"])
+
+
+async def _read_limited_upload(file: UploadFile) -> bytes:
+    content = await file.read(settings.MAX_IMPORT_UPLOAD_SIZE_BYTES + 1)
+    if len(content) > settings.MAX_IMPORT_UPLOAD_SIZE_BYTES:
+        raise HTTPException(status_code=413, detail="Excel upload exceeds maximum allowed size")
+    return content
 
 
 def _parse_mapping(mapping_str: str) -> Dict[str, str]:
@@ -18,10 +27,10 @@ def _parse_mapping(mapping_str: str) -> Dict[str, str]:
         if not isinstance(data, dict):
             raise ValueError("Mapping must be a key-value dictionary")
         return {str(k).strip(): str(v).strip() for k, v in data.items() if v}
-    except Exception as e:
+    except Exception:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid JSON mapping format: {str(e)}"
+            detail="Invalid JSON mapping format"
         )
 
 
@@ -33,22 +42,22 @@ async def preview_import_file(
     """
     Reads an uploaded Excel file headers and sample rows, suggesting probable column mappings.
     """
-    if not file.filename.lower().endswith((".xlsx", ".xls")):
+    if not (file.filename or "").lower().endswith((".xlsx", ".xls")):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="File must be an Excel spreadsheet (.xlsx or .xls)"
         )
 
-    content = await file.read()
+    content = await _read_limited_upload(file)
     try:
         preview = MasterDataService.preview_excel(content, entity_type.strip().lower())
         return preview
     except ValueError as ve:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
-    except Exception as e:
+    except Exception:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to preview Excel file: {str(e)}"
+            detail="Failed to preview Excel file"
         )
 
 
@@ -70,7 +79,7 @@ async def import_customers_endpoint(
         )
 
     mapping_dict = _parse_mapping(mapping)
-    content = await file.read()
+    content = await _read_limited_upload(file)
 
     try:
         summary = MasterDataService.import_customers(
@@ -82,10 +91,12 @@ async def import_customers_endpoint(
         return summary
     except ValueError as ve:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
-    except Exception as e:
+    except OperationalError:
+        raise
+    except Exception:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Customer import failed: {str(e)}"
+            detail="Customer import failed"
         )
 
 
@@ -107,7 +118,7 @@ async def import_products_endpoint(
         )
 
     mapping_dict = _parse_mapping(mapping)
-    content = await file.read()
+    content = await _read_limited_upload(file)
 
     try:
         summary = MasterDataService.import_products(
@@ -119,10 +130,12 @@ async def import_products_endpoint(
         return summary
     except ValueError as ve:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
-    except Exception as e:
+    except OperationalError:
+        raise
+    except Exception:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Product import failed: {str(e)}"
+            detail="Product import failed"
         )
 
 
@@ -144,7 +157,7 @@ async def import_packaging_endpoint(
         )
 
     mapping_dict = _parse_mapping(mapping)
-    content = await file.read()
+    content = await _read_limited_upload(file)
 
     try:
         summary = MasterDataService.import_packaging(
@@ -156,8 +169,10 @@ async def import_packaging_endpoint(
         return summary
     except ValueError as ve:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
-    except Exception as e:
+    except OperationalError:
+        raise
+    except Exception:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Packaging import failed: {str(e)}"
+            detail="Packaging import failed"
         )

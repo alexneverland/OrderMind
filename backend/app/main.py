@@ -1,16 +1,18 @@
 from contextlib import asynccontextmanager
+import sqlite3
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from sqlalchemy.exc import OperationalError
 
 from backend.app.config import settings
-from backend.app.core.database import init_db
+from backend.app.core.database import enable_sqlite_wal
 from backend.app.api.router import api_router
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Initialize database tables on startup
-    init_db()
+    enable_sqlite_wal()
     yield
 
 
@@ -33,6 +35,18 @@ app.add_middleware(
 
 # Include API router
 app.include_router(api_router)
+
+
+@app.exception_handler(OperationalError)
+async def sqlite_operational_error_handler(request, exc: OperationalError):
+    code = getattr(exc.orig, "sqlite_errorcode", None)
+    if code is not None and code & 0xFF in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Database is busy; retry shortly"},
+            headers={"Retry-After": "1"},
+        )
+    return JSONResponse(status_code=500, content={"detail": "Database operation failed"})
 
 
 @app.get("/health", tags=["Health"])

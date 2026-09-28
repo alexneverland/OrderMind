@@ -81,6 +81,18 @@ class ExportEngine:
 
         # Sort lines by line_number for deterministic output
         sorted_lines = sorted(order.lines, key=lambda l: l.line_number)
+        if not preview:
+            snapshot = order.approved_snapshot
+            if not isinstance(snapshot, dict) or "lines" not in snapshot:
+                raise OrderExportError("Approved order has no export snapshot")
+            live_identity = [(line.id, line.line_number) for line in sorted_lines]
+            snapshot_identity = [(item.get("line_id"), item.get("line_number")) for item in snapshot["lines"]]
+            if len(live_identity) != len(snapshot_identity) or any(
+                snapshot_id is not None and snapshot_id != live_id or snapshot_number != live_number
+                for (live_id, live_number), (snapshot_id, snapshot_number)
+                in zip(live_identity, snapshot_identity)
+            ):
+                raise OrderExportError("Approved order lines differ from export snapshot")
 
         for line in sorted_lines:
             row: List[Any] = []
@@ -153,6 +165,7 @@ class ExportEngine:
                 created_at=datetime.now(timezone.utc)
             )
             db.add(export_record)
+            order.version += 1
             order.exported_at = datetime.now(timezone.utc)
             order.status = OrderStatus.EXPORTED.value
             order.last_export_profile_id = profile.id
