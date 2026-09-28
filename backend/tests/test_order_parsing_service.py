@@ -1,8 +1,25 @@
 import pytest
+from unittest.mock import AsyncMock
+
 from backend.app.models.company import Company
 from backend.app.models.customer import Customer
 from backend.app.services.order_parsing_service import OrderParsingService
-from backend.app.schemas.order import NormalizedOrder
+from backend.app.schemas.order import NormalizedOrder, NormalizedOrderLineDraft
+from backend.app.ai.base import BaseAIProvider
+
+
+class HallucinatingAIProvider(BaseAIProvider):
+    name: str = "hallucinator"
+
+    async def extract_order(self, normalized_input, context=None):
+        return [
+            NormalizedOrderLineDraft(
+                original_text="10 γάλατα φρέσκα",  # completely absent from customer input!
+                product_phrase="γάλατα φρέσκα",
+                quantity=10.0,
+                unit="piece"
+            )
+        ]
 
 
 @pytest.mark.asyncio
@@ -38,13 +55,45 @@ async def test_order_parsing_service_success(db_session):
     assert line1.line_number == 1
     assert line1.quantity == 4.0
     assert line1.unit == "case"
+    assert line1.raw_unit == "κούτες"
+    assert line1.unit_explicit is True
     assert line1.product_phrase == "ζαμπόν 500"
 
     line2 = normalized_order.items[1]
     assert line2.line_number == 2
     assert line2.quantity == 10.0
     assert line2.unit == "piece"
+    assert line2.raw_unit == "τεμάχια"
+    assert line2.unit_explicit is True
     assert line2.product_phrase == "μπέικον"
+
+
+@pytest.mark.asyncio
+async def test_order_parsing_service_grounding_rejects_hallucination(db_session):
+    """
+    CRITICAL: Verify that if an AI provider returns an item that cannot be grounded
+    in the raw customer input, it is rejected with a controlled ValueError.
+    """
+    comp = Company(name="Co 1")
+    db_session.add(comp)
+    db_session.commit()
+
+    cust = Customer(company_id=comp.id, customer_code="C-1", customer_name="Customer 1")
+    db_session.add(cust)
+    db_session.commit()
+
+    # Pass the hallucinating provider
+    service = OrderParsingService(ai_provider=HallucinatingAIProvider())
+
+    raw_input = "3 κούτες ζαμπόν 500"
+    with pytest.raises(ValueError, match="cannot be grounded in customer input"):
+        await service.parse_order(
+            db=db_session,
+            company_id=comp.id,
+            customer_id=cust.id,
+            text=raw_input,
+            source_type="plain_text"
+        )
 
 
 @pytest.mark.asyncio

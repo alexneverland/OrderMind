@@ -14,6 +14,8 @@ async def test_mock_ai_provider_single_line_variations():
     assert len(items1) == 1
     assert items1[0].quantity == 3.0
     assert items1[0].unit == "case"
+    assert items1[0].raw_unit == "κούτες"
+    assert items1[0].unit_explicit is True
     assert items1[0].product_phrase == "ζαμπόν 500"
 
     # 2. "5 τεμάχια μπέικον"
@@ -22,6 +24,8 @@ async def test_mock_ai_provider_single_line_variations():
     assert len(items2) == 1
     assert items2[0].quantity == 5.0
     assert items2[0].unit == "piece"
+    assert items2[0].raw_unit == "τεμάχια"
+    assert items2[0].unit_explicit is True
     assert items2[0].product_phrase == "μπέικον"
 
     # 3. "5 τεμ μπέικον"
@@ -30,6 +34,8 @@ async def test_mock_ai_provider_single_line_variations():
     assert len(items3) == 1
     assert items3[0].quantity == 5.0
     assert items3[0].unit == "piece"
+    assert items3[0].raw_unit == "τεμ"
+    assert items3[0].unit_explicit is True
     assert items3[0].product_phrase == "μπέικον"
 
     # 4. "2 κιλά σαλάμι"
@@ -38,15 +44,29 @@ async def test_mock_ai_provider_single_line_variations():
     assert len(items4) == 1
     assert items4[0].quantity == 2.0
     assert items4[0].unit == "kg"
+    assert items4[0].raw_unit == "κιλά"
+    assert items4[0].unit_explicit is True
     assert items4[0].product_phrase == "σαλάμι"
 
-    # 5. "10 κοκκινα" (no explicit unit, defaults to piece)
+    # 5. "10 κοκκινα" (unspecified unit: defaults to piece, unit_explicit=False, raw_unit=None)
     inp5 = NormalizedInput(raw_text="10 κοκκινα", normalized_text="")
     items5 = await provider.extract_order(inp5)
     assert len(items5) == 1
     assert items5[0].quantity == 10.0
     assert items5[0].unit == "piece"
+    assert items5[0].raw_unit is None
+    assert items5[0].unit_explicit is False
     assert items5[0].product_phrase == "κοκκινα"
+
+    # 6. "5 trays bacon" (unknown explicit unit: MUST NOT become piece!)
+    inp6 = NormalizedInput(raw_text="5 trays bacon", normalized_text="")
+    items6 = await provider.extract_order(inp6)
+    assert len(items6) == 1
+    assert items6[0].quantity == 5.0
+    assert items6[0].unit == "unknown"
+    assert items6[0].raw_unit == "trays"
+    assert items6[0].unit_explicit is True
+    assert items6[0].product_phrase == "bacon"
 
 
 @pytest.mark.asyncio
@@ -60,8 +80,10 @@ async def test_mock_ai_provider_connector_and_multiline():
     assert len(items1) == 2
     assert items1[0].quantity == 3.0
     assert items1[0].product_phrase == "ζαμπόν"
+    assert items1[0].unit_explicit is False
     assert items1[1].quantity == 4.0
     assert items1[1].product_phrase == "μπέικον"
+    assert items1[1].unit_explicit is False
 
     # Multiline with greetings
     raw_text = """
@@ -76,10 +98,14 @@ async def test_mock_ai_provider_connector_and_multiline():
     assert len(items2) == 2
     assert items2[0].quantity == 3.0
     assert items2[0].unit == "case"
+    assert items2[0].raw_unit == "κούτες"
+    assert items2[0].unit_explicit is True
     assert items2[0].product_phrase == "ζαμπόν"
 
     assert items2[1].quantity == 5.0
     assert items2[1].unit == "piece"
+    assert items2[1].raw_unit is None
+    assert items2[1].unit_explicit is False
     assert items2[1].product_phrase == "μπέικον"
 
 
@@ -93,8 +119,12 @@ async def test_mock_ai_provider_messy_input():
     assert len(items) == 2
     assert items[0].quantity == 10.0
     assert items[0].unit == "case"
+    assert items[0].raw_unit == "κουτες"
+    assert items[0].unit_explicit is True
     assert items[0].product_phrase == "Γαλοπούλα Καπνιστή 1kg"
 
     assert items[1].quantity == 2.5
     assert items[1].unit == "kg"
+    assert items[1].raw_unit == "κιλά"
+    assert items[1].unit_explicit is True
     assert items[1].product_phrase == "Φέτα ΠΟΠ"

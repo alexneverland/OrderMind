@@ -2,7 +2,6 @@ import time
 import logging
 from typing import Optional, Dict, Any, List
 from sqlalchemy.orm import Session
-from sqlalchemy import select
 
 from backend.app.models.company import Company
 from backend.app.models.customer import Customer
@@ -14,7 +13,7 @@ from backend.app.schemas.order import (
     NormalizedOrderLine,
     NormalizedOrderLineDraft
 )
-from backend.app.core.text_normalizer import normalize_unit
+from backend.app.core.text_normalizer import is_grounded_in_input
 
 logger = logging.getLogger("ordermind.parsing")
 
@@ -40,7 +39,7 @@ class OrderParsingService:
     ) -> NormalizedOrder:
         """
         Executes end-to-end parsing pipeline:
-        Input -> Adapter -> NormalizedInput -> AI Extraction -> Validated NormalizedOrder
+        Input -> Adapter -> NormalizedInput -> AI Extraction -> Grounding Validation -> Validated NormalizedOrder
         """
         # 1. Verify Company exists
         company = db.get(Company, company_id)
@@ -73,15 +72,26 @@ class OrderParsingService:
             )
             duration_ms = round((time.perf_counter() - start_time) * 1000, 2)
 
-            # 6. Build sequential, validated lines
+            # 6. Build sequential, grounded, validated lines
             order_lines: List[NormalizedOrderLine] = []
             for idx, draft in enumerate(draft_items, start=1):
+                # Grounding verification: Check that draft original_text or product_phrase exists in input
+                if not (
+                    is_grounded_in_input(draft.original_text, normalized_input.raw_text)
+                    or is_grounded_in_input(draft.product_phrase, normalized_input.raw_text)
+                ):
+                    raise ValueError(
+                        f"Extracted item '{draft.original_text}' cannot be grounded in customer input (hallucination detected)."
+                    )
+
                 order_lines.append(NormalizedOrderLine(
                     line_number=idx,
                     original_text=draft.original_text,
                     product_phrase=draft.product_phrase,
                     quantity=draft.quantity,
-                    unit=normalize_unit(draft.unit)
+                    unit=draft.unit,
+                    raw_unit=draft.raw_unit,
+                    unit_explicit=draft.unit_explicit
                 ))
 
             logger.info(

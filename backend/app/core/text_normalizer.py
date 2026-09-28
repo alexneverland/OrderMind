@@ -1,6 +1,6 @@
 import unicodedata
 import re
-from typing import Optional, List
+from typing import Optional, Tuple, List
 
 GREEK_ACCENT_MAP = {
     'ά': 'α', 'έ': 'ε', 'ή': 'η', 'ί': 'ι', 'ό': 'ο', 'ύ': 'υ', 'ώ': 'ω',
@@ -87,21 +87,38 @@ def normalize_text(text: Optional[str]) -> str:
 
 
 # Pre-computed map where all keys are normalized with normalize_text
-# This ensures that keys with 'ς' and accented vowels match seamlessly!
 UNIT_MAPPING = {normalize_text(k): v for k, v in RAW_UNIT_MAPPING.items()}
 
 
+def resolve_unit(unit_str: Optional[str]) -> Tuple[str, Optional[str], bool]:
+    """
+    Resolves unit string into:
+    - canonical_unit: "piece" | "case" | "kg" | "pallet" | "unknown"
+    - raw_unit: original verbatim unit text if mentioned
+    - unit_explicit: True if a unit was explicitly mentioned in the order
+
+    Critical safety guarantees:
+    1. Unspecified unit -> ("piece", None, False)
+    2. Known explicit unit -> (canonical, raw_unit, True)
+    3. Unknown explicit unit (e.g. "trays") -> ("unknown", "trays", True) [NEVER silently turned to piece!]
+    """
+    if not unit_str or not str(unit_str).strip():
+        return ("piece", None, False)
+
+    raw_clean = str(unit_str).strip()
+    norm_unit = normalize_text(raw_clean)
+
+    if norm_unit in UNIT_MAPPING:
+        return (UNIT_MAPPING[norm_unit], raw_clean, True)
+
+    # Unit was explicitly provided but is unknown to our catalog mapping
+    return ("unknown", raw_clean, True)
+
+
 def normalize_unit(unit_str: Optional[str]) -> str:
-    """
-    Normalizes Greek and Latin quantity units to standard canonical values:
-    - "piece", "case", "kg", "pallet".
-    Defaults to "piece" if unknown or unspecified.
-    """
-    if not unit_str:
-        return "piece"
-    
-    clean_unit = normalize_text(unit_str)
-    return UNIT_MAPPING.get(clean_unit, "piece")
+    """Backwards-compatible helper returning canonical unit."""
+    canonical, _, _ = resolve_unit(unit_str)
+    return canonical
 
 
 CLOSING_PATTERNS = [
@@ -121,14 +138,39 @@ def is_noise_line(line: str) -> bool:
     if not norm:
         return True
     
-    # Check exact closing match
     for pattern in CLOSING_PATTERNS:
         if re.match(pattern, norm):
             return True
             
-    # Check if line is purely a greeting without any digits or item indicators
     for pattern in GREETING_PATTERNS:
         if re.match(pattern, norm) and not re.search(r"\d", norm):
             return True
 
     return False
+
+
+def is_grounded_in_input(fragment: str, raw_input: str) -> bool:
+    """
+    Verifies that an extracted fragment is traceable to the customer's raw input.
+    Uses normalized text and token presence so minor punctuation/whitespace differences
+    do not break verification, while completely fabricated/hallucinated items are rejected.
+    """
+    if not fragment or not raw_input:
+        return False
+    norm_frag = normalize_text(fragment)
+    norm_input = normalize_text(raw_input)
+    if not norm_frag:
+        return False
+    
+    # 1. Direct normalized substring check
+    if norm_frag in norm_input:
+        return True
+    
+    # 2. Token overlap check: all non-trivial tokens of fragment must be present in raw input
+    frag_tokens = [t for t in norm_frag.split() if len(t) > 1]
+    if not frag_tokens:
+        return norm_frag in norm_input
+        
+    input_tokens = set(norm_input.split())
+    matched_tokens = sum(1 for t in frag_tokens if t in input_tokens)
+    return (matched_tokens / len(frag_tokens)) >= 0.8

@@ -3,10 +3,24 @@ from typing import List, Optional, Dict, Any
 from backend.app.ai.base import BaseAIProvider
 from backend.app.schemas.adapters import NormalizedInput
 from backend.app.schemas.order import NormalizedOrderLineDraft
-from backend.app.core.text_normalizer import normalize_unit, is_noise_line
+from backend.app.core.text_normalizer import resolve_unit, is_noise_line
 
-# Regex patterns for unit keywords in Greek & English
-UNIT_PATTERN = r"(?:κουτες|κούτες|κουτα|κούτα|κιβωτια|κιβώτια|κιβωτιο|κιβώτιο|κιβ|τεμαχια|τεμάχια|τεμαχιο|τεμάχιο|τεμ|τεμ\.|pcs|pieces|piece|κιλα|κιλά|κιλο|κιλό|kg|kgs|kgr|παλετες|παλέτες|παλετα|παλέτα|pallet|carton|box|boxes)"
+RAW_UNITS = [
+    "κουτες", "κούτες", "κουτα", "κούτα", "κιβωτια", "κιβώτια", "κιβωτιο", "κιβώτιο", "κιβ",
+    "τεμαχια", "τεμάχια", "τεμαχιο", "τεμάχιο", "τεμχ", "τεμ", "τεμ.", "pcs", "pieces", "piece",
+    "κιλα", "κιλά", "κιλο", "κιλό", "kg", "kgs", "kgr", "kilo", "kilos",
+    "παλετες", "παλέτες", "παλετα", "παλέτα", "pallets", "pallet",
+    "cartons", "carton", "boxes", "box",
+    "trays", "tray", "ταψια", "ταψιά", "ταψι", "ταψί",
+    "κουβαδες", "κουβάδες", "κουβας", "κουβάς",
+    "βαζα", "βάζα", "βαζο", "βάζο",
+    "δοχεια", "δοχεία", "δοχειο", "δοχείο",
+    "σακουλες", "σακούλες", "σακουλα", "σακούλα",
+    "πακετα", "πακέτα", "πακετο", "πακέτο"
+]
+# Sort by length descending so longer tokens take precedence over shorter prefixes (e.g. 'trays' before 'tray')
+RAW_UNITS.sort(key=len, reverse=True)
+UNIT_PATTERN = r"(?:" + "|".join(re.escape(u) for u in RAW_UNITS) + r")"
 
 PREFIX_PATTERN = r"^\s*(?:και\s+)?(?:(?:βαλε|βάλε|στειλε|στείλε|γραψε|γράψε|θελω|θέλω|θελουμε|θέλουμε)\s+(?:μου\s+)?)?"
 
@@ -70,7 +84,7 @@ class MockAIProvider(BaseAIProvider):
                 if match:
                     qty_str, unit_str, product_phrase = match.groups()
                     qty = float(qty_str.replace(",", "."))
-                    canonical_unit = normalize_unit(unit_str)
+                    canonical_unit, raw_unit, unit_explicit = resolve_unit(unit_str)
                     
                     # Clean trailing punctuation and unwanted colon from product phrase
                     cleaned_phrase = product_phrase.strip().rstrip(",;:.")
@@ -79,7 +93,9 @@ class MockAIProvider(BaseAIProvider):
                             original_text=seg_stripped,
                             product_phrase=cleaned_phrase,
                             quantity=qty,
-                            unit=canonical_unit
+                            unit=canonical_unit,
+                            raw_unit=raw_unit,
+                            unit_explicit=unit_explicit
                         ))
                 else:
                     # Fallback: check if line ends with a quantity (e.g. "ζαμπόν 500 3 κούτες")
@@ -87,14 +103,16 @@ class MockAIProvider(BaseAIProvider):
                     if reverse_match:
                         product_phrase, qty_str, unit_str = reverse_match.groups()
                         qty = float(qty_str.replace(",", "."))
-                        canonical_unit = normalize_unit(unit_str)
+                        canonical_unit, raw_unit, unit_explicit = resolve_unit(unit_str)
                         cleaned_phrase = product_phrase.strip().rstrip(",;:.")
                         if cleaned_phrase:
                             extracted_items.append(NormalizedOrderLineDraft(
                                 original_text=seg_stripped,
                                 product_phrase=cleaned_phrase,
                                 quantity=qty,
-                                unit=canonical_unit
+                                unit=canonical_unit,
+                                raw_unit=raw_unit,
+                                unit_explicit=unit_explicit
                             ))
 
         return extracted_items

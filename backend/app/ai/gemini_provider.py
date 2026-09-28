@@ -7,7 +7,7 @@ from backend.app.ai.base import BaseAIProvider
 from backend.app.config import settings
 from backend.app.schemas.adapters import NormalizedInput
 from backend.app.schemas.order import NormalizedOrderLineDraft
-from backend.app.core.text_normalizer import normalize_unit
+from backend.app.core.text_normalizer import resolve_unit
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +16,7 @@ class GeminiExtractedItem(BaseModel):
     original_text: str = Field(description="Verbatim line or phrase from the raw input")
     product_phrase: str = Field(description="Requested product description without quantities or units")
     quantity: float = Field(description="Requested quantity, must be positive number")
-    unit: str = Field(default="piece", description="Packaging or measurement unit: piece, case, kg, pallet")
+    unit: Optional[str] = Field(default=None, description="Verbatim packaging or measurement unit if mentioned, or null if none mentioned")
 
 
 class GeminiExtractionResponse(BaseModel):
@@ -31,14 +31,15 @@ ABSOLUTE BOUNDARIES AND CONSTRAINTS:
 2. Source of Truth: Do NOT invent products or match them against external catalogs.
 3. No conversions: Do NOT convert cases into pieces or pallets into cartons. Extract the verbatim unit requested.
 4. Filter noise: Ignore greetings, pleasantries, delivery instructions, or sign-offs (e.g. 'Καλημέρα', 'παρακαλώ', 'ευχαριστώ', 'στείλτε τα αύριο').
-5. Units: Map units to standard forms: 'piece', 'case', 'kg', 'pallet'. Default to 'piece' if unspecified.
+5. Units: Extract the verbatim unit as written by customer if mentioned (e.g. 'κούτες', 'κιλά', 'τεμάχια', 'trays', 'κιβώτια'). If NO unit is mentioned, return null for unit. Never invent or assume a unit.
+6. Grounding: The original_text must be the exact verbatim snippet from the customer input.
 """
 
 
 class GeminiProvider(BaseAIProvider):
     """
     Production AI provider using official Google GenAI SDK (google-genai).
-    Enforces structured output validated against Pydantic schema.
+    Enforces fully async execution via client.aio, retries, and structured output.
     """
     name: str = "gemini"
 
@@ -75,7 +76,8 @@ class GeminiProvider(BaseAIProvider):
 
         for attempt in range(max_retries):
             try:
-                response = client.models.generate_content(
+                # Fully async call using client.aio to prevent blocking the event loop
+                response = await client.aio.models.generate_content(
                     model=self.model_name,
                     contents=user_content,
                     config=types.GenerateContentConfig(
@@ -97,11 +99,14 @@ class GeminiProvider(BaseAIProvider):
                 for item in structured.items:
                     if item.quantity <= 0:
                         continue
+                    canonical_unit, raw_unit, unit_explicit = resolve_unit(item.unit)
                     results.append(NormalizedOrderLineDraft(
                         original_text=item.original_text,
                         product_phrase=item.product_phrase,
                         quantity=item.quantity,
-                        unit=normalize_unit(item.unit)
+                        unit=canonical_unit,
+                        raw_unit=raw_unit,
+                        unit_explicit=unit_explicit
                     ))
 
                 return results
@@ -109,7 +114,7 @@ class GeminiProvider(BaseAIProvider):
             except Exception as e:
                 last_error = e
                 logger.warning(
-                    "Gemini extraction attempt %d failed: %s",
+                    "Gemini async extraction attempt %d failed: %s",
                     attempt + 1,
                     str(e)
                 )
