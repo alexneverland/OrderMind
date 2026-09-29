@@ -73,6 +73,8 @@ class OrderLineResponse(BaseModel):
     unit_explicit: bool = False
     quantity_text: Optional[str] = None
     bonus_quantity: float = 0
+    calculated_bonus_quantity: float = 0
+    promotion_result: Optional[dict] = None
     final_bonus_quantity: Optional[float] = None
     matched_product_id: Optional[int] = None
     matched_product: Optional[ProductBrief] = None

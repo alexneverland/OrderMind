@@ -158,6 +158,33 @@ describe("operator review", () => {
     fireEvent.change(screen.getByRole("combobox", { name: "Final unit" }), { target: { value: "piece" } });
     expect(screen.getByRole("button", { name: "Save values" })).toBeEnabled();
   });
+  it("shows customer bonus, calculated promotion and final bonus separately", async () => {
+    current.lines[0].bonus_quantity = 2;
+    current.lines[0].calculated_bonus_quantity = 1;
+    current.lines[0].promotion_result = {
+      applied_rule_id: 7, calculated_bonus_quantity: 1,
+      explanation: "Rule #7: Every 10 piece gives 1 free piece.",
+      requires_review: true, matching_rule_ids: [7],
+    };
+    show();
+    expect(await screen.findByText(/Rule #7: Every 10 piece/)).toBeInTheDocument();
+    expect(screen.getByText(/Review required: choose the final free quantity/)).toBeInTheDocument();
+    expect(screen.getAllByText((_, element) => element?.tagName === "SMALL" && /\+\s*2\s*δώρο/.test(element.textContent || "")).length).toBeGreaterThan(0);
+    expect(screen.getByText((_, element) => element?.tagName === "STRONG" && /\+1 piece free/.test(element.textContent || ""))).toBeInTheDocument();
+  });
+  it("does not freeze an automatic bonus when only paid quantity changes", async () => {
+    current.lines[0].calculated_bonus_quantity = 1;
+    current.lines[0].promotion_result = {
+      applied_rule_id: 7, calculated_bonus_quantity: 1,
+      explanation: "Every 10 pieces gives 1 free.", requires_review: false, matching_rule_ids: [7],
+    };
+    mock.updateFinalValues.mockResolvedValue({});
+    show();
+    fireEvent.click(await screen.findByRole("button", { name: "Edit final values" }));
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Final quantity" }), { target: { value: "20" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save values" }));
+    await waitFor(() => expect(mock.updateFinalValues).toHaveBeenCalledWith(1, 7, 20, "piece", undefined));
+  });
   it("shows paid and free quantities that the four-column export will receive", async () => {
     mock.getProfiles.mockResolvedValue([
       { id: 20, name: "Legacy sheet", format: "order_sheet", bonus_marker: "Α" },

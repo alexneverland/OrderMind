@@ -25,12 +25,17 @@ def test_fresh_sqlite_database_reaches_model_head(tmp_path: Path):
     _alembic(database, "check")
     with sqlite3.connect(database) as connection:
         connection.execute("PRAGMA foreign_keys=ON")
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("f6a7b9c20013",)
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("a7b9c20014",)
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
         connection.execute("INSERT INTO companies (id,name) VALUES (1,'A'),(2,'B')")
         connection.execute("INSERT INTO products (id,company_id,sku,description,unit,active) VALUES (1,1,'SKU-A','Product A','piece',1)")
         with pytest.raises(sqlite3.IntegrityError):
             connection.execute("INSERT INTO company_product_unit_preferences (company_id,product_id,unit) VALUES (2,1,'kg')")
+        connection.rollback()
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute("""INSERT INTO company_rules
+                (company_id,rule_type,fingerprint,enabled,product_id,configuration)
+                VALUES (2,'quantity_bonus','foreign',1,1,'{}')""")
 
 
 def test_existing_companies_and_order_sheets_get_explicit_compatibility_policy(tmp_path: Path):

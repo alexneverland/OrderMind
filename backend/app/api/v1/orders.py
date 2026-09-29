@@ -52,6 +52,7 @@ from backend.app.services.export_engine import (
 )
 from backend.app.services.order_file_service import extract_order_file, OrderFileError
 from backend.app.services.business_settings_service import effective_business_settings, validate_order_quantity_policy
+from backend.app.services.company_rule_service import effective_bonus
 
 logger = logging.getLogger("ordermind.orders_api")
 router = APIRouter(prefix="/orders", tags=["Orders"])
@@ -519,7 +520,7 @@ def get_order_endpoint(
             ratio = item.get("pieces_per_case")
         else:
             quantity = line.final_quantity if line.final_quantity is not None else line.requested_quantity
-            bonus = line.final_bonus_quantity if line.final_bonus_quantity is not None else line.bonus_quantity
+            bonus = effective_bonus(line)
             unit = line.final_unit or line.requested_unit
             ratio = line.matched_packaging.pieces_per_case if line.matched_packaging else None
         try:

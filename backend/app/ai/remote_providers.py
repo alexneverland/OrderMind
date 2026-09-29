@@ -47,7 +47,7 @@ class OpenAIProvider(BaseAIProvider):
         from openai import AsyncOpenAI
         return AsyncOpenAI(api_key=settings.OPENAI_API_KEY, timeout=60.0, max_retries=1)
 
-    async def _complete(self, prompt: str, file: bytes | None = None, mime_type: str | None = None) -> str:
+    async def _complete(self, prompt: str, file: bytes | None = None, mime_type: str | None = None, system_instruction: str | None = None) -> str:
         client = self._client()
         content: list[dict[str, Any]] = [{"type": "input_text", "text": prompt}]
         if file is not None and mime_type:
@@ -59,7 +59,7 @@ class OpenAIProvider(BaseAIProvider):
         try:
             response = await client.responses.create(
                 model=self.model_name,
-                instructions=EXTRACTION_SYSTEM_PROMPT if file is None else None,
+                instructions=system_instruction if system_instruction is not None else (EXTRACTION_SYSTEM_PROMPT if file is None else None),
                 input=[{"role": "user", "content": content}],
                 max_output_tokens=16000,
                 store=False,
@@ -93,7 +93,7 @@ class AnthropicProvider(BaseAIProvider):
         from anthropic import AsyncAnthropic
         return AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY, timeout=60.0, max_retries=1)
 
-    async def _complete(self, prompt: str, file: bytes | None = None, mime_type: str | None = None) -> str:
+    async def _complete(self, prompt: str, file: bytes | None = None, mime_type: str | None = None, system_instruction: str | None = None) -> str:
         client = self._client()
         content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
         if file is not None and mime_type:
@@ -103,7 +103,7 @@ class AnthropicProvider(BaseAIProvider):
             response = await client.messages.create(
                 model=self.model_name,
                 max_tokens=16000,
-                system=EXTRACTION_SYSTEM_PROMPT if file is None else "Transcribe only what is visible; never infer missing text.",
+                system=system_instruction if system_instruction is not None else (EXTRACTION_SYSTEM_PROMPT if file is None else "Transcribe only what is visible; never infer missing text."),
                 messages=[{"role": "user", "content": content}],
             )
             return "\n".join(block.text for block in response.content if block.type == "text")
