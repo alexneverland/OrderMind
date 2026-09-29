@@ -1,10 +1,11 @@
 import logging
 import hashlib
 import json
+from datetime import datetime, timezone
 from typing import Optional, List, Any
-from fastapi import APIRouter, Depends, HTTPException, status, Query, Response, Header
-from sqlalchemy.orm import Session
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Response, Header, File, UploadFile
+from sqlalchemy.orm import Session, selectinload
+from sqlalchemy import select, func, or_, exists
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm.exc import StaleDataError
 
@@ -32,6 +33,7 @@ from backend.app.schemas.workflow import (
     OrderLineResponse,
     OrderApprovalResponse,
     OrderLineUpdateValuesRequest,
+    OrderListItem,
 )
 from backend.app.services.order_parsing_service import OrderParsingService
 from backend.app.services.matching_engine import MatchingEngine
@@ -44,9 +46,96 @@ from backend.app.services.export_engine import (
     ExportEngine,
     OrderExportError,
 )
+from backend.app.services.order_file_service import extract_order_file, OrderFileError
 
 logger = logging.getLogger("ordermind.orders_api")
 router = APIRouter(prefix="/orders", tags=["Orders"])
+
+
+@router.post("/file-preview")
+async def preview_order_file(file: UploadFile = File(...)):
+    """Extract editable order text. The original binary is not retained."""
+    content = await file.read(settings.MAX_ORDER_UPLOAD_SIZE_BYTES + 1)
+    if len(content) > settings.MAX_ORDER_UPLOAD_SIZE_BYTES:
+        raise HTTPException(status_code=413, detail="Order file exceeds the 10 MB limit")
+    try:
+        extracted, method = await extract_order_file(file.filename or "", content)
+    except OrderFileError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"filename": file.filename, "text": extracted, "method": method}
+
+
+@router.get("/summary")
+def order_dashboard_summary(
+    day_start: datetime = Query(..., description="Operator-local day start as an ISO timestamp with offset"),
+    day_end: datetime = Query(..., description="Next operator-local day start as an ISO timestamp with offset"),
+    company_id: Optional[int] = Query(None),
+    db: Session = Depends(get_db),
+):
+    if day_start.tzinfo is None or day_end.tzinfo is None or day_end <= day_start:
+        raise HTTPException(status_code=400, detail="A valid timezone-aware day range is required")
+    start = day_start.astimezone(timezone.utc).replace(tzinfo=None)
+    end = day_end.astimezone(timezone.utc).replace(tzinfo=None)
+
+    def count(*conditions):
+        stmt = select(func.count(Order.id)).where(*conditions)
+        if company_id is not None:
+            stmt = stmt.where(Order.company_id == company_id)
+        return db.scalar(stmt) or 0
+
+    pending = count(Order.status == "pending_review")
+    return {
+        "pending_review": pending,
+        "approved_today": count(Order.approved_at >= start, Order.approved_at < end),
+        "exported_today": count(Order.exported_at >= start, Order.exported_at < end),
+        "needs_attention": count(
+            Order.status == "pending_review",
+            exists(select(OrderLine.id).where(
+                OrderLine.order_id == Order.id,
+                OrderLine.status.in_(("needs_review", "unresolved")),
+            )),
+        ),
+    }
+
+
+@router.get("", response_model=List[OrderListItem])
+def list_orders_endpoint(
+    company_id: Optional[int] = Query(None),
+    status_filter: Optional[str] = Query(None, alias="status"),
+    search: Optional[str] = Query(None, max_length=100),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+):
+    """Newest orders for the operator inbox, with tenant-scoped search."""
+    from backend.app.models.customer import Customer
+
+    line_counts = select(OrderLine.order_id, func.count(OrderLine.id).label("line_count")).group_by(OrderLine.order_id).subquery()
+    stmt = (select(Order, line_counts.c.line_count)
+            .join(Customer, (Order.customer_id == Customer.id) & (Order.company_id == Customer.company_id))
+            .outerjoin(line_counts, line_counts.c.order_id == Order.id)
+            .options(selectinload(Order.customer))
+            .order_by(Order.created_at.desc(), Order.id.desc())
+            .limit(limit).offset(offset))
+    if company_id is not None:
+        stmt = stmt.where(Order.company_id == company_id)
+    if status_filter:
+        if status_filter not in {"pending_review", "approved", "exported", "cancelled"}:
+            raise HTTPException(status_code=400, detail="Unsupported order status filter")
+        stmt = stmt.where(Order.status == status_filter)
+    if search and search.strip():
+        term = f"%{search.strip()}%"
+        stmt = stmt.where(or_(Order.order_number.ilike(term), Customer.customer_name.ilike(term), Customer.customer_code.ilike(term)))
+    return [{
+        "id": order.id, "company_id": order.company_id,
+        "customer_id": order.customer_id, "customer": order.customer,
+        "order_number": order.order_number, "status": order.status,
+        "overall_confidence": order.overall_confidence,
+        "created_at": order.created_at, "approved_at": order.approved_at,
+        "exported_at": order.exported_at,
+        "last_export_profile_id": order.last_export_profile_id,
+        "line_count": count or 0,
+    } for order, count in db.execute(stmt).all()]
 
 
 @router.post("/parse", response_model=OrderParseResponse, status_code=status.HTTP_200_OK)
@@ -360,6 +449,8 @@ async def create_order_from_match_endpoint(
         )
     except OperationalError:
         raise
+    except RuntimeError:
+        raise HTTPException(status_code=503, detail="AI provider is temporarily unavailable; retry shortly")
     except Exception as e:
         logger.error("Unexpected server error during order creation: %s", type(e).__name__)
         raise HTTPException(

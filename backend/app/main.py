@@ -1,8 +1,10 @@
 from contextlib import asynccontextmanager
 import sqlite3
+from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy.exc import OperationalError
 
 from backend.app.config import settings
@@ -35,6 +37,22 @@ app.add_middleware(
 
 # Include API router
 app.include_router(api_router)
+
+# Serve a built operator workspace from the same origin as the API.
+frontend_dist = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+if (frontend_dist / "index.html").is_file():
+    app.mount("/assets", StaticFiles(directory=frontend_dist / "assets"), name="frontend-assets")
+
+    @app.get("/", include_in_schema=False)
+    @app.get("/orders", include_in_schema=False)
+    @app.get("/orders/new", include_in_schema=False)
+    @app.get("/orders/{order_id}", include_in_schema=False)
+    @app.get("/customers", include_in_schema=False)
+    @app.get("/products", include_in_schema=False)
+    @app.get("/export-profiles", include_in_schema=False)
+    @app.get("/settings", include_in_schema=False)
+    def operator_workspace(order_id: str | None = None):
+        return FileResponse(frontend_dist / "index.html")
 
 
 @app.exception_handler(OperationalError)

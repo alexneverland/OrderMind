@@ -32,6 +32,31 @@ class OrderCandidateDto(BaseModel):
     match_type: str
     score: float
     explanation: str
+    product: Optional["ProductBrief"] = None
+
+
+class ProductBrief(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    sku: str
+    description: str
+    barcode: Optional[str] = None
+
+
+class CustomerBrief(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    customer_code: str
+    customer_name: str
+
+
+class ExportRecordBrief(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    export_profile_id: Optional[int] = None
+    filename: str
+    format: str
+    created_at: datetime
 
 
 class OrderLineResponse(BaseModel):
@@ -47,6 +72,7 @@ class OrderLineResponse(BaseModel):
     raw_unit: Optional[str] = None
     unit_explicit: bool = False
     matched_product_id: Optional[int] = None
+    matched_product: Optional[ProductBrief] = None
     matched_packaging_id: Optional[int] = None
     final_sku: Optional[str] = None
     final_quantity: Optional[float] = None
@@ -63,6 +89,7 @@ class OrderResponse(BaseModel):
     id: int
     company_id: int
     customer_id: int
+    customer: Optional[CustomerBrief] = None
     order_number: str
     status: str
     overall_confidence: float
@@ -71,7 +98,25 @@ class OrderResponse(BaseModel):
     confirmed_at: Optional[datetime] = None
     approved_at: Optional[datetime] = None
     exported_at: Optional[datetime] = None
+    last_export_profile_id: Optional[int] = None
+    export_records: List[ExportRecordBrief] = Field(default_factory=list)
     lines: List[OrderLineResponse] = Field(default_factory=list)
+
+
+class OrderListItem(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    company_id: int
+    customer_id: int
+    customer: CustomerBrief
+    order_number: str
+    status: str
+    overall_confidence: float
+    created_at: datetime
+    approved_at: Optional[datetime] = None
+    exported_at: Optional[datetime] = None
+    last_export_profile_id: Optional[int] = None
+    line_count: int
 
 
 class OrderApprovalResponse(BaseModel):

@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     )
 
     # AI Provider settings (abstracted)
-    AI_PROVIDER: str = Field(default="mock", description="Active AI provider: mock, gemini, openai, vertex, anthropic")
+    AI_PROVIDER: str = Field(default="mock", description="Active AI provider: mock, gemini, openai, anthropic, vertex")
     AI_MODEL: str = Field(default="mock-model", description="AI model name")
 
     # API keys and Cloud credentials (loaded from .env only, never committed)
@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     MAX_RAW_ORDER_TEXT_SIZE: int = Field(default=50000, description="Max raw text size in characters")
     MAX_ORDER_LINES: int = Field(default=500, description="Max lines allowed per order")
     MAX_IMPORT_UPLOAD_SIZE_BYTES: int = Field(default=10_000_000, description="Maximum Excel upload size")
+    MAX_ORDER_UPLOAD_SIZE_BYTES: int = Field(default=10_000_000, description="Maximum customer order file size")
 
     model_config = SettingsConfigDict(
         env_file=".env",

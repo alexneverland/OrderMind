@@ -1,5 +1,6 @@
 import json
 import logging
+import asyncio
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field
 
@@ -47,7 +48,7 @@ class GeminiProvider(BaseAIProvider):
         self.api_key = api_key or settings.GEMINI_API_KEY
         self.model_name = model_name or settings.AI_MODEL
         if self.model_name == "mock-model":
-            self.model_name = "gemini-2.5-flash"
+            self.model_name = "gemini-3.8-flash"
         self._client = None
 
     def _get_client(self):
@@ -68,7 +69,7 @@ class GeminiProvider(BaseAIProvider):
 
         user_content = f"Extract items from this customer order:\n\"\"\"\n{normalized_input.raw_text}\n\"\"\""
 
-        max_retries = 2
+        max_retries = 3
         last_error = None
 
         for attempt in range(max_retries):
@@ -115,5 +116,9 @@ class GeminiProvider(BaseAIProvider):
                     attempt + 1,
                     type(e).__name__
                 )
+                # Retry brief upstream overloads, not malformed output or invalid credentials.
+                if attempt + 1 >= max_retries or getattr(e, "code", None) not in {429, 500, 502, 503, 504}:
+                    break
+                await asyncio.sleep(2 ** attempt)
 
         raise RuntimeError("AI extraction provider is unavailable") from last_error

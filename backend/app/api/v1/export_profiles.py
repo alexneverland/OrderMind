@@ -12,8 +12,14 @@ from backend.app.services.export_profile_service import (
     ExportProfileService,
     ExportProfileValidationError,
 )
+from backend.app.services.export_registry import AVAILABLE_SOURCE_FIELDS
 
 router = APIRouter(prefix="/export-profiles", tags=["Export Profiles"])
+
+
+@router.get("/source-fields", response_model=dict[str, str])
+def list_export_source_fields():
+    return AVAILABLE_SOURCE_FIELDS
 
 
 @router.post("", response_model=ExportProfileResponse, status_code=status.HTTP_201_CREATED)

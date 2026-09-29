@@ -16,10 +16,9 @@ def test_ai_provider_factory_distinction():
     provider = get_ai_provider("mock")
     assert isinstance(provider, MockAIProvider)
 
-    # Planned stub providers must raise NotImplementedError
-    for planned in PLANNED_PROVIDERS:
-        with pytest.raises(NotImplementedError, match="is planned for a future release"):
-            get_ai_provider(planned)
+    assert not PLANNED_PROVIDERS
+    for name in ("gemini", "openai", "anthropic", "vertex"):
+        assert get_ai_provider(name).name == name
 
     # Completely unknown provider must raise ValueError
     with pytest.raises(ValueError, match="Unknown AI provider"):
@@ -102,7 +101,7 @@ async def test_gemini_provider_async_call_and_unit_resolution():
 
 @pytest.mark.asyncio
 async def test_gemini_provider_malformed_response_handling():
-    """Verify GeminiProvider retries and raises controlled error if model returns invalid JSON."""
+    """Malformed output fails without repeating a non-transient request."""
     provider = GeminiProvider(api_key="fake-test-key")
 
     mock_client = MagicMock()
@@ -115,5 +114,27 @@ async def test_gemini_provider_malformed_response_handling():
     with pytest.raises(RuntimeError, match="AI extraction provider is unavailable"):
         await provider.extract_order(inp)
 
-    # Verify it attempted 2 async calls
+    assert mock_client.aio.models.generate_content.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_gemini_provider_retries_transient_overload(monkeypatch):
+    class Overloaded(Exception):
+        code = 503
+
+    provider = GeminiProvider(api_key="fake-test-key")
+    mock_client = MagicMock()
+    response = MagicMock()
+    response.text = json.dumps({"items": [{
+        "original_text": "3 olives", "product_phrase": "olives", "quantity": 3, "unit": None,
+    }]})
+    mock_client.aio.models.generate_content = AsyncMock(side_effect=[Overloaded(), response])
+    provider._client = mock_client
+
+    async def no_delay(_seconds):
+        pass
+
+    monkeypatch.setattr("backend.app.ai.gemini_provider.asyncio.sleep", no_delay)
+    items = await provider.extract_order(NormalizedInput(raw_text="3 olives", normalized_text=""))
+    assert len(items) == 1
     assert mock_client.aio.models.generate_content.await_count == 2

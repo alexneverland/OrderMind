@@ -7,6 +7,17 @@ from fastapi.testclient import TestClient
 
 from backend.app.core.database import Base, get_db
 from backend.app.main import app
+from backend.app.config import settings
+
+
+@pytest.fixture(autouse=True)
+def isolate_ai_credentials(monkeypatch):
+    """Never let tests inherit the operator's local provider or real API keys."""
+    monkeypatch.setattr(settings, "AI_PROVIDER", "mock")
+    monkeypatch.setattr(settings, "AI_MODEL", "mock-model")
+    monkeypatch.setattr(settings, "GEMINI_API_KEY", None)
+    monkeypatch.setattr(settings, "OPENAI_API_KEY", None)
+    monkeypatch.setattr(settings, "ANTHROPIC_API_KEY", None)
 
 # In-memory SQLite using StaticPool ensures all connections share the same memory database
 TEST_DATABASE_URL = "sqlite:///:memory:"
