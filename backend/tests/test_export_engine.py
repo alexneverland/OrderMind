@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from backend.app.models.company import Company
 from backend.app.models.customer import Customer
-from backend.app.models.product import Product
+from backend.app.models.product import Product, Packaging
 from backend.app.models.order import Order
 from backend.app.schemas.workflow import OrderStatus
 from backend.app.schemas.matching import LineMatchResult, MatchedProductInfo, ConfidenceResult, MatchDecision
@@ -197,6 +197,71 @@ def test_export_xlsx(db_session):
     assert order.status == OrderStatus.EXPORTED.value
     assert order.exported_at is not None
     assert order.last_export_profile_id == profile.id
+
+
+def test_four_column_order_sheet_converts_cases_and_separates_bonus_from_snapshot(db_session, client):
+    company = Company(name="Order sheet company")
+    db_session.add(company)
+    db_session.flush()
+    customer = Customer(company_id=company.id, customer_code="SHEET", customer_name="Buyer")
+    product = Product(company_id=company.id, sku="180534", description="ΩΜΟΠΛΑΤΗ", unit="piece")
+    db_session.add_all([customer, product])
+    db_session.flush()
+    package = Packaging(company_id=company.id, product_id=product.id, package_type="case", pieces_per_case=12, unit="piece")
+    db_session.add(package)
+    db_session.commit()
+    match = LineMatchResult(
+        line_number=1, original_text="180534 10 κιβώτια + 1 δώρο", product_phrase="180534",
+        quantity=10, unit="case", raw_unit="κιβώτια", unit_explicit=True,
+        quantity_text="10 κιβώτια + 1 δώρο", bonus_quantity=1,
+        best_match=MatchedProductInfo(product_id=product.id, sku=product.sku, description=product.description, unit="piece"),
+        matched_packaging_id=package.id,
+        confidence=ConfidenceResult(score=0.98, decision=MatchDecision.AUTO_ACCEPT),
+    )
+    order = OrderWorkflowService.create_order_from_match(
+        db_session, company.id, customer.id, match.original_text, [match]
+    )
+    pending = client.get(f"/api/v1/orders/{order.id}")
+    assert pending.status_code == 200, pending.text
+    assert pending.json()["lines"][0]["order_sheet_paid_quantity"] == 120
+    assert pending.json()["lines"][0]["order_sheet_bonus_quantity"] == 12
+    assert pending.json()["lines"][0]["order_sheet_unit"] == "piece"
+    OrderWorkflowService.approve_order(db_session, order.id)
+    package.pieces_per_case = 24
+    db_session.commit()
+    approved = client.get(f"/api/v1/orders/{order.id}")
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["lines"][0]["order_sheet_paid_quantity"] == 120
+    assert approved.json()["lines"][0]["order_sheet_bonus_quantity"] == 12
+    profile = ExportProfileService.create_profile(db_session, ExportProfileCreate(
+        company_id=company.id, name="Four columns", format="order_sheet", mappings=[],
+    ))
+    content, _, _ = ExportEngine.export_order(db_session, order.id, profile.id)
+    rows = list(openpyxl.load_workbook(io.BytesIO(content)).active.values)
+    assert rows == [
+        ("180534", "ΩΜΟΠΛΑΤΗ", None, 120),
+        ("180534", "ΩΜΟΠΛΑΤΗ", "Α", 12),
+    ]
+
+
+def test_create_from_match_preserves_grounded_bonus(client, db_session):
+    company = Company(name="Bonus API company")
+    db_session.add(company)
+    db_session.flush()
+    customer = Customer(company_id=company.id, customer_code="BONUS", customer_name="Bonus buyer")
+    product = Product(company_id=company.id, sku="131382", description="Frank", unit="piece")
+    db_session.add_all([customer, product])
+    db_session.commit()
+    text = "131382 Frank 56+6"
+    response = client.post("/api/v1/orders/create-from-match", json={
+        "company_id": company.id, "customer_id": customer.id, "raw_input": text,
+        "items": [{
+            "line_number": 1, "original_text": text, "product_phrase": "131382",
+            "quantity": 56, "quantity_text": "56+6", "bonus_quantity": 6, "unit": "piece",
+        }],
+    })
+    assert response.status_code == 201, response.text
+    assert response.json()["lines"][0]["bonus_quantity"] == 6
 
 
 def test_reexport_uses_approved_snapshot_including_empty_master_fields(db_session):

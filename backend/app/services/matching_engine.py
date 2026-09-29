@@ -4,6 +4,7 @@ from sqlalchemy import select, or_
 from rapidfuzz import fuzz
 
 from backend.app.models.product import Product, ProductAlias, Packaging
+from backend.app.models.memory import CompanyProductUnitPreference
 from backend.app.models.memory import CustomerProductAlias
 from backend.app.core.text_normalizer import normalize_text, normalize_unit, stem_phrase
 from backend.app.schemas.matching import (
@@ -374,7 +375,20 @@ class MatchingEngine:
             ev.evidence_type in ("exact_packaging_code", "exact_packaging_barcode")
             for ev in best_cand_dto.evidence
         ) else None
-        final_unit = unit if unit_explicit else best_prod.unit
+        # The catalog's base unit is product metadata. A customer order with
+        # no explicit unit requests a count of pieces.
+        final_unit = unit
+        preference_applied = False
+        if not unit_explicit:
+            preference = db.execute(select(CompanyProductUnitPreference).where(
+                CompanyProductUnitPreference.company_id == company_id,
+                CompanyProductUnitPreference.product_id == best_prod.id,
+            )).scalar_one_or_none()
+            if preference and preference.unit != unit:
+                final_unit = preference.unit
+                preference_applied = True
+                best_conf.decision = MatchDecision.NEEDS_REVIEW
+                best_conf.reasons.append(f"Previous operator unit correction suggests '{final_unit}'; verify this order")
         matched_packaging_id = None
         if packaging_identifier:
             matching_package = [p for p in best_prod.packagings
@@ -383,7 +397,7 @@ class MatchingEngine:
                 final_unit = packaging_unit(matching_package[0].package_type)
                 if final_unit == "unknown":
                     final_unit = normalize_unit(matching_package[0].unit)
-        if unit_explicit or packaging_identifier:
+        if unit_explicit or packaging_identifier or preference_applied:
             compatible, matched_packaging_id, reason = resolve_product_packaging(
                 best_prod, final_unit, packaging_identifier
             )

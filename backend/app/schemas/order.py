@@ -11,6 +11,8 @@ class NormalizedOrderLineDraft(BaseModel):
     unit: str = Field(default="piece", description="Normalized packaging or unit of measure: piece, case, kg, pallet, unknown")
     raw_unit: Optional[str] = Field(default=None, description="Verbatim unit as mentioned in input")
     unit_explicit: bool = Field(default=False, description="Whether unit was explicitly mentioned in input")
+    quantity_text: Optional[str] = Field(default=None, description="Verbatim quantity expression from this item")
+    bonus_quantity: float = Field(default=0, ge=0, allow_inf_nan=False)
 
     @field_validator("product_phrase", mode="before")
     @classmethod
@@ -29,6 +31,8 @@ class NormalizedOrderLine(BaseModel):
     unit: str = Field(default="piece", description="Canonical unit: piece, case, kg, pallet, unknown")
     raw_unit: Optional[str] = Field(default=None, description="Verbatim unit as mentioned in input")
     unit_explicit: bool = Field(default=False, description="Whether unit was explicitly mentioned in input")
+    quantity_text: Optional[str] = None
+    bonus_quantity: float = Field(default=0, ge=0, allow_inf_nan=False)
 
 
 class NormalizedOrder(BaseModel):

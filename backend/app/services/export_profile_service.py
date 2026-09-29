@@ -22,7 +22,7 @@ class ExportProfileService:
     Manages CRUD and validation for user-configurable ERP/warehouse export profiles.
     """
 
-    SUPPORTED_FORMATS = {"excel", "xlsx", "csv", "json"}
+    SUPPORTED_FORMATS = {"excel", "xlsx", "csv", "json", "order_sheet"}
     SUPPORTED_DELIMITERS = {",", ";", "\t", "|"}
     SUPPORTED_ENCODINGS = {"utf-8", "utf-8-sig", "windows-1253", "iso-8859-7", "latin1", "ascii"}
 
@@ -79,7 +79,11 @@ class ExportProfileService:
         if enc not in cls.SUPPORTED_ENCODINGS:
             raise ExportProfileValidationError(f"Unsupported encoding '{payload.encoding}'. Supported: {sorted(list(cls.SUPPORTED_ENCODINGS))}")
 
-        cls.validate_profile_mappings(payload.mappings)
+        if fmt == "order_sheet":
+            if payload.mappings:
+                raise ExportProfileValidationError("Order sheet profiles have fixed columns and no mappings")
+        else:
+            cls.validate_profile_mappings(payload.mappings)
 
         profile = ExportProfile(
             company_id=payload.company_id,
@@ -133,6 +137,8 @@ class ExportProfileService:
             fmt = payload.format.lower().strip()
             if fmt not in cls.SUPPORTED_FORMATS:
                 raise ExportProfileValidationError(f"Unsupported format '{payload.format}'.")
+            if fmt != profile.format and "order_sheet" in {fmt, profile.format}:
+                raise ExportProfileValidationError("Create a separate profile for the fixed order sheet format")
             profile.format = fmt
 
         if payload.delimiter is not None:
@@ -150,7 +156,11 @@ class ExportProfileService:
             profile.encoding = enc
 
         if payload.mappings is not None:
-            cls.validate_profile_mappings(payload.mappings)
+            if profile.format == "order_sheet":
+                if payload.mappings:
+                    raise ExportProfileValidationError("Order sheet profiles have fixed columns and no mappings")
+            else:
+                cls.validate_profile_mappings(payload.mappings)
             # Remove old mappings
             for m in list(profile.field_mappings):
                 db.delete(m)
@@ -168,6 +178,9 @@ class ExportProfileService:
                     constant_value=m.constant_value if m.constant_value is not None else None
                 )
                 db.add(field_map)
+
+        if profile.format != "order_sheet" and not profile.field_mappings:
+            raise ExportProfileValidationError("Export profile must define at least one column mapping")
 
         db.commit()
         db.refresh(profile)

@@ -436,41 +436,87 @@ class MasterDataService:
         skipped = 0
         error_details: List[RowErrorDetail] = []
 
-        # Pre-fetch products lookup: sku -> product_id for this company
-        products_query = select(Product.id, Product.sku).where(Product.company_id == company_id)
-        sku_to_product_id = {sku: pid for pid, sku in db.execute(products_query).all()}
-
+        # Parse and validate spreadsheet values before reserving SQLite's
+        # single writer. Only database-dependent checks happen under the lock.
+        prepared_rows = []
         for idx, row in df.iterrows():
             row_num = idx + 2
             row_dict = row.to_dict()
-
-            prod_sku_col = mapping.get("product_sku")
-            pack_type_col = mapping.get("package_type")
-            pieces_col = mapping.get("pieces_per_case")
-            weight_col = mapping.get("weight")
-            unit_col = mapping.get("unit")
-            pack_code_col = mapping.get("package_code")
-            pack_barcode_col = mapping.get("packaging_barcode")
-
-            product_sku = _clean_val(row.get(prod_sku_col)) if prod_sku_col else None
-            package_type = _clean_val(row.get(pack_type_col)) if pack_type_col else None
-            pieces_val = row.get(pieces_col) if pieces_col else None
+            product_sku = _clean_val(row.get(mapping.get("product_sku")))
+            package_type = _clean_val(row.get(mapping.get("package_type")))
+            pieces_val = row.get(mapping.get("pieces_per_case"))
             pieces = _clean_float(pieces_val)
-            weight = _clean_float(row.get(weight_col)) if weight_col else None
-            unit = _clean_val(row.get(unit_col)) if unit_col else "piece"
-            package_code = _clean_val(row.get(pack_code_col)) if pack_code_col else None
-            packaging_barcode = _clean_val(row.get(pack_barcode_col)) if pack_barcode_col else None
+            weight = _clean_float(row.get(mapping.get("weight")))
+            unit = _clean_val(row.get(mapping.get("unit"))) or "piece"
+            package_code = _clean_val(row.get(mapping.get("package_code")))
+            packaging_barcode = _clean_val(row.get(mapping.get("packaging_barcode")))
 
-            # Validation
             if not product_sku:
                 error_details.append(RowErrorDetail(
-                    row_number=row_num,
-                    field="product_sku",
-                    reason="Parent product SKU is missing or empty",
-                    raw_data=row_dict
+                    row_number=row_num, field="product_sku",
+                    reason="Parent product SKU is missing or empty", raw_data=row_dict,
                 ))
                 continue
+            if not package_type:
+                error_details.append(RowErrorDetail(
+                    row_number=row_num, field="package_type",
+                    reason="Package type is missing or empty", raw_data=row_dict,
+                ))
+                continue
+            if pieces is None or pieces <= 0:
+                error_details.append(RowErrorDetail(
+                    row_number=row_num, field="pieces_per_case",
+                    reason=f"Invalid pieces_per_case value '{pieces_val}', must be a positive number",
+                    raw_data=row_dict,
+                ))
+                continue
+            prepared_rows.append((
+                row_num, row_dict, product_sku, package_type, pieces,
+                weight, unit, package_code, packaging_barcode,
+            ))
 
+        if not prepared_rows:
+            return ImportSummaryResponse(
+                entity_type="packaging", total_rows=total_rows,
+                imported=0, skipped=0, errors=len(error_details),
+                error_details=error_details,
+            )
+
+        # SQLite has one writer. Reserve it only after parsing, then perform the
+        # lookup and inserts in the same transaction so concurrent imports see
+        # the first writer's committed packaging rows.
+        db.connection().exec_driver_sql("BEGIN IMMEDIATE")
+
+        # Pre-fetch products and packaging definitions for this company.
+        products_query = select(Product.id, Product.sku).where(Product.company_id == company_id)
+        sku_to_product_id = {sku: pid for pid, sku in db.execute(products_query).all()}
+        existing_packaging = db.execute(
+            select(Packaging).where(Packaging.company_id == company_id)
+        ).scalars().all()
+        by_code: Dict[str, List[Packaging]] = {}
+        by_barcode: Dict[str, List[Packaging]] = {}
+        by_definition: Dict[tuple, List[Packaging]] = {}
+        by_scope: Dict[tuple, List[Packaging]] = {}
+
+        def definition(packaging: Packaging) -> tuple:
+            return (
+                packaging.product_id, packaging.package_type,
+                packaging.pieces_per_case, packaging.weight, packaging.unit,
+            )
+
+        def index(packaging: Packaging) -> None:
+            if packaging.package_code:
+                by_code.setdefault(packaging.package_code, []).append(packaging)
+            if packaging.packaging_barcode:
+                by_barcode.setdefault(packaging.packaging_barcode, []).append(packaging)
+            by_definition.setdefault(definition(packaging), []).append(packaging)
+            by_scope.setdefault((packaging.product_id, packaging.package_type, packaging.unit), []).append(packaging)
+
+        for packaging in existing_packaging:
+            index(packaging)
+
+        for (row_num, row_dict, product_sku, package_type, pieces,
+             weight, unit, package_code, packaging_barcode) in prepared_rows:
             if product_sku not in sku_to_product_id:
                 error_details.append(RowErrorDetail(
                     row_number=row_num,
@@ -480,39 +526,75 @@ class MasterDataService:
                 ))
                 continue
 
-            if not package_type:
-                error_details.append(RowErrorDetail(
-                    row_number=row_num,
-                    field="package_type",
-                    reason="Package type is missing or empty",
-                    raw_data=row_dict
-                ))
-                continue
-
-            if pieces is None or pieces <= 0:
-                error_details.append(RowErrorDetail(
-                    row_number=row_num,
-                    field="pieces_per_case",
-                    reason=f"Invalid pieces_per_case value '{pieces_val}', must be a positive number",
-                    raw_data=row_dict
-                ))
-                continue
-
             product_id = sku_to_product_id[product_sku]
+            incoming_definition = (product_id, package_type, pieces, weight, unit)
+            candidates = {
+                id(packaging): packaging
+                for packaging in (
+                    by_code.get(package_code, []) if package_code else []
+                ) + (
+                    by_barcode.get(packaging_barcode, []) if packaging_barcode else []
+                )
+            }
+            if len(candidates) > 1:
+                error_details.append(RowErrorDetail(
+                    row_number=row_num,
+                    field="package_code",
+                    reason="Package code and barcode identify different existing packaging rows",
+                    raw_data=row_dict,
+                ))
+                continue
+            if candidates:
+                existing = next(iter(candidates.values()))
+                if (definition(existing) == incoming_definition
+                    and existing.package_code == package_code
+                    and existing.packaging_barcode == packaging_barcode):
+                    skipped += 1
+                else:
+                    error_details.append(RowErrorDetail(
+                        row_number=row_num,
+                        field="package_code",
+                        reason="Existing package code or barcode has different values; review it before importing",
+                        raw_data=row_dict,
+                    ))
+                continue
+            if by_definition.get(incoming_definition):
+                existing = by_definition[incoming_definition][0]
+                if not package_code and not packaging_barcode and not existing.package_code and not existing.packaging_barcode:
+                    skipped += 1
+                else:
+                    error_details.append(RowErrorDetail(
+                        row_number=row_num,
+                        field="package_code",
+                        reason="This packaging definition already exists with different identifiers",
+                        raw_data=row_dict,
+                    ))
+                continue
+            if not package_code and not packaging_barcode and by_scope.get((product_id, package_type, unit)):
+                error_details.append(RowErrorDetail(
+                    row_number=row_num,
+                    field="package_code",
+                    reason="Packaging with this product, type and unit already exists with different values; add a stable code or barcode",
+                    raw_data=row_dict,
+                ))
+                continue
             packaging = Packaging(
+                company_id=company_id,
                 product_id=product_id,
                 package_code=package_code,
                 packaging_barcode=packaging_barcode,
                 package_type=package_type,
                 pieces_per_case=pieces,
                 weight=weight,
-                unit=unit or "piece"
+                unit=unit
             )
             db.add(packaging)
+            index(packaging)
             imported += 1
 
         db.commit()
 
+        error_details.sort(key=lambda detail: detail.row_number)
         return ImportSummaryResponse(
             entity_type="packaging",
             total_rows=total_rows,

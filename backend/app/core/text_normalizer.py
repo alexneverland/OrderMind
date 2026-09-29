@@ -15,6 +15,7 @@ RAW_UNIT_MAPPING = {
     "τεμαχιο": "piece",
     "τεμαχια": "piece",
     "τεμ": "piece",
+    "tem": "piece",
     "τεμ.": "piece",
     "τεμχ": "piece",
     "pcs": "piece",
@@ -30,6 +31,7 @@ RAW_UNIT_MAPPING = {
     "κιβωτιο": "case",
     "κιβωτια": "case",
     "κιβ": "case",
+    "kib": "case",
     "κιβ.": "case",
     "case": "case",
     "cases": "case",
@@ -43,6 +45,7 @@ RAW_UNIT_MAPPING = {
     # Kilogram
     "κιλο": "kg",
     "κιλα": "kg",
+    "κιλ": "kg",
     "kg": "kg",
     "kgs": "kg",
     "kgr": "kg",
@@ -113,6 +116,16 @@ def resolve_unit(unit_str: Optional[str]) -> Tuple[str, Optional[str], bool]:
 
     # Unit was explicitly provided but is unknown to our catalog mapping
     return ("unknown", raw_clean, True)
+
+
+def quantity_expression_units(quantity_text: Optional[str]) -> List[Tuple[str, str]]:
+    """Return units written in a quantity expression, including units joined to digits."""
+    if not quantity_text:
+        return []
+    separated = re.sub(r"(?<=\d)(?=[^\W\d_])", " ", quantity_text, flags=re.UNICODE)
+    tokens = re.findall(r"[^\W\d_]+", separated, flags=re.UNICODE)
+    return [(UNIT_MAPPING[normalize_text(token)], token) for token in tokens
+            if normalize_text(token) in UNIT_MAPPING]
 
 
 def normalize_unit(unit_str: Optional[str]) -> str:
@@ -211,7 +224,8 @@ def _without_product_phrase(text_span: str, product_phrase: Optional[str]) -> st
 
 
 def is_quantity_grounded_in_span(
-    quantity: float, text_span: str, raw_input: str, product_phrase: Optional[str] = None
+    quantity: float, text_span: str, raw_input: str, product_phrase: Optional[str] = None,
+    quantity_text: Optional[str] = None, bonus_quantity: float = 0,
 ) -> bool:
     """
     Verifies that the extracted numerical quantity is grounded in the verbatim text span.
@@ -219,6 +233,21 @@ def is_quantity_grounded_in_span(
     - If no numbers are present in the text span: a quantity of 1.0 (default implicit quantity) is acceptable.
     - If provider hallucinated an arbitrary quantity (e.g. text has '2' but provider returns 20): returns False.
     """
+    if quantity_text:
+        before = r"(?<![\d.,])" if quantity_text[0].isdigit() else ""
+        after = r"(?![\d]|[.,]\d)" if quantity_text[-1].isdigit() else ""
+        if not re.search(before + re.escape(quantity_text) + after, text_span):
+            return False
+        numerals = [float(value.replace(",", ".")) for value in
+                    re.findall(r"\d+(?:[.,]\d+)?", quantity_text)]
+        if not numerals:
+            numerals = extract_numbers_from_text(quantity_text)
+        expected = [quantity] + ([bonus_quantity] if bonus_quantity else [])
+        return len(numerals) == len(expected) and all(
+            abs(actual - wanted) < 1e-4 for actual, wanted in zip(numerals, expected)
+        )
+    if bonus_quantity:
+        return False
     span_numbers = extract_numbers_from_text(_without_product_phrase(text_span, product_phrase))
     if span_numbers:
         # Multiple plausible quantities in one span require human review.
@@ -233,6 +262,7 @@ def is_unit_grounded_in_span(
     text_span: str,
     raw_input: str,
     product_phrase: Optional[str] = None,
+    quantity_text: Optional[str] = None,
 ) -> bool:
     """
     Verifies that an extracted unit is grounded in the customer's text.
@@ -242,7 +272,10 @@ def is_unit_grounded_in_span(
     - If unit_explicit is False:
       - Valid default when customer didn't specify a unit.
     """
-    remaining_span = _without_product_phrase(text_span, product_phrase)
+    remaining_span = quantity_text if quantity_text else _without_product_phrase(text_span, product_phrase)
+    if quantity_text:
+        remaining_span = re.sub(r"\d+(?:[.,]\d+)?", " ", remaining_span)
+        remaining_span = remaining_span.replace("+", " ")
     normalized_span = normalize_text(remaining_span)
     span_tokens = normalized_span.split()
     explicit_units = {UNIT_MAPPING[token] for token in span_tokens if token in UNIT_MAPPING}

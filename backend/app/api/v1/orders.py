@@ -1,10 +1,11 @@
 import logging
 import hashlib
 import json
+from datetime import datetime, timezone
 from typing import Optional, List, Any
-from fastapi import APIRouter, Depends, HTTPException, status, Query, Response, Header
-from sqlalchemy.orm import Session
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Response, Header, File, UploadFile
+from sqlalchemy.orm import Session, selectinload
+from sqlalchemy import select, func, or_, exists
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm.exc import StaleDataError
 
@@ -32,6 +33,7 @@ from backend.app.schemas.workflow import (
     OrderLineResponse,
     OrderApprovalResponse,
     OrderLineUpdateValuesRequest,
+    OrderListItem,
 )
 from backend.app.services.order_parsing_service import OrderParsingService
 from backend.app.services.matching_engine import MatchingEngine
@@ -43,10 +45,98 @@ from backend.app.services.order_workflow_service import (
 from backend.app.services.export_engine import (
     ExportEngine,
     OrderExportError,
+    convert_order_sheet_quantities,
 )
+from backend.app.services.order_file_service import extract_order_file, OrderFileError
 
 logger = logging.getLogger("ordermind.orders_api")
 router = APIRouter(prefix="/orders", tags=["Orders"])
+
+
+@router.post("/file-preview")
+async def preview_order_file(file: UploadFile = File(...)):
+    """Extract editable order text. The original binary is not retained."""
+    content = await file.read(settings.MAX_ORDER_UPLOAD_SIZE_BYTES + 1)
+    if len(content) > settings.MAX_ORDER_UPLOAD_SIZE_BYTES:
+        raise HTTPException(status_code=413, detail="Order file exceeds the 10 MB limit")
+    try:
+        extracted, method = await extract_order_file(file.filename or "", content)
+    except OrderFileError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"filename": file.filename, "text": extracted, "method": method}
+
+
+@router.get("/summary")
+def order_dashboard_summary(
+    day_start: datetime = Query(..., description="Operator-local day start as an ISO timestamp with offset"),
+    day_end: datetime = Query(..., description="Next operator-local day start as an ISO timestamp with offset"),
+    company_id: Optional[int] = Query(None),
+    db: Session = Depends(get_db),
+):
+    if day_start.tzinfo is None or day_end.tzinfo is None or day_end <= day_start:
+        raise HTTPException(status_code=400, detail="A valid timezone-aware day range is required")
+    start = day_start.astimezone(timezone.utc).replace(tzinfo=None)
+    end = day_end.astimezone(timezone.utc).replace(tzinfo=None)
+
+    def count(*conditions):
+        stmt = select(func.count(Order.id)).where(*conditions)
+        if company_id is not None:
+            stmt = stmt.where(Order.company_id == company_id)
+        return db.scalar(stmt) or 0
+
+    pending = count(Order.status == "pending_review")
+    return {
+        "pending_review": pending,
+        "approved_today": count(Order.approved_at >= start, Order.approved_at < end),
+        "exported_today": count(Order.exported_at >= start, Order.exported_at < end),
+        "needs_attention": count(
+            Order.status == "pending_review",
+            exists(select(OrderLine.id).where(
+                OrderLine.order_id == Order.id,
+                OrderLine.status.in_(("needs_review", "unresolved")),
+            )),
+        ),
+    }
+
+
+@router.get("", response_model=List[OrderListItem])
+def list_orders_endpoint(
+    company_id: Optional[int] = Query(None),
+    status_filter: Optional[str] = Query(None, alias="status"),
+    search: Optional[str] = Query(None, max_length=100),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+):
+    """Newest orders for the operator inbox, with tenant-scoped search."""
+    from backend.app.models.customer import Customer
+
+    line_counts = select(OrderLine.order_id, func.count(OrderLine.id).label("line_count")).group_by(OrderLine.order_id).subquery()
+    stmt = (select(Order, line_counts.c.line_count)
+            .join(Customer, (Order.customer_id == Customer.id) & (Order.company_id == Customer.company_id))
+            .outerjoin(line_counts, line_counts.c.order_id == Order.id)
+            .options(selectinload(Order.customer))
+            .order_by(Order.created_at.desc(), Order.id.desc())
+            .limit(limit).offset(offset))
+    if company_id is not None:
+        stmt = stmt.where(Order.company_id == company_id)
+    if status_filter:
+        if status_filter not in {"pending_review", "approved", "exported", "cancelled"}:
+            raise HTTPException(status_code=400, detail="Unsupported order status filter")
+        stmt = stmt.where(Order.status == status_filter)
+    if search and search.strip():
+        term = f"%{search.strip()}%"
+        stmt = stmt.where(or_(Order.order_number.ilike(term), Customer.customer_name.ilike(term), Customer.customer_code.ilike(term)))
+    return [{
+        "id": order.id, "company_id": order.company_id,
+        "customer_id": order.customer_id, "customer": order.customer,
+        "order_number": order.order_number, "status": order.status,
+        "overall_confidence": order.overall_confidence,
+        "created_at": order.created_at, "approved_at": order.approved_at,
+        "exported_at": order.exported_at,
+        "last_export_profile_id": order.last_export_profile_id,
+        "line_count": count or 0,
+    } for order, count in db.execute(stmt).all()]
 
 
 @router.post("/parse", response_model=OrderParseResponse, status_code=status.HTTP_200_OK)
@@ -133,7 +223,7 @@ async def match_order_endpoint(
         for item in lines_to_process:
             if normalize_text(item.original_text) not in normalize_text(raw_input):
                 raise ValueError(f"Line {item.line_number} is not present in raw order text")
-            if not is_quantity_grounded_in_span(item.quantity, item.original_text, raw_input, item.product_phrase) or not is_unit_grounded_in_span(item.unit, item.raw_unit, item.unit_explicit, item.original_text, raw_input, item.product_phrase):
+            if not is_quantity_grounded_in_span(item.quantity, item.original_text, raw_input, item.product_phrase, item.quantity_text, item.bonus_quantity) or not is_unit_grounded_in_span(item.unit, item.raw_unit, item.unit_explicit, item.original_text, raw_input, item.product_phrase, item.quantity_text):
                 raise ValueError(f"Line {item.line_number} quantity or unit is not grounded in raw order text")
 
         matched_lines: List[LineMatchResult] = []
@@ -154,6 +244,8 @@ async def match_order_endpoint(
                 raw_unit=line.raw_unit,
                 unit_explicit=line.unit_explicit
             )
+            res.quantity_text = line.quantity_text
+            res.bonus_quantity = line.bonus_quantity
             if res.confidence.decision == MatchDecision.AUTO_ACCEPT:
                 auto_accepted_count += 1
             elif res.confidence.decision == MatchDecision.NEEDS_REVIEW:
@@ -256,6 +348,8 @@ async def create_order_from_match_endpoint(
                     unit = it.get("unit") if it.get("unit") is not None else (it.get("requested_unit") or "piece")
                     raw_unit = it.get("raw_unit")
                     unit_explicit = it.get("unit_explicit", False)
+                    quantity_text = it.get("quantity_text")
+                    bonus_quantity = it.get("bonus_quantity", 0)
                 else:
                     line_no = getattr(it, "line_number", idx + 1)
                     orig_text = getattr(it, "original_text", "")
@@ -268,11 +362,14 @@ async def create_order_from_match_endpoint(
                         unit = getattr(it, "requested_unit", "piece")
                     raw_unit = getattr(it, "raw_unit", None)
                     unit_explicit = getattr(it, "unit_explicit", False)
+                    quantity_text = getattr(it, "quantity_text", None)
+                    bonus_quantity = getattr(it, "bonus_quantity", 0)
 
                 item = NormalizedOrderLine.model_validate({
                     "line_number": line_no, "original_text": orig_text,
                     "product_phrase": phrase, "quantity": qty, "unit": unit,
                     "raw_unit": raw_unit, "unit_explicit": unit_explicit,
+                    "quantity_text": quantity_text, "bonus_quantity": bonus_quantity,
                 })
                 if item.line_number in seen_line_numbers:
                     raise ValueError(f"Duplicate line number {item.line_number}")
@@ -280,10 +377,11 @@ async def create_order_from_match_endpoint(
                 if normalize_text(item.original_text) not in normalize_text(raw_input):
                     raise ValueError(f"Line {item.line_number} is not present in raw order text")
                 if not is_quantity_grounded_in_span(
-                    item.quantity, item.original_text, raw_input, item.product_phrase
+                    item.quantity, item.original_text, raw_input, item.product_phrase,
+                    item.quantity_text, item.bonus_quantity,
                 ) or not is_unit_grounded_in_span(
                     item.unit, item.raw_unit, item.unit_explicit,
-                    item.original_text, raw_input, item.product_phrase
+                    item.original_text, raw_input, item.product_phrase, item.quantity_text,
                 ):
                     raise ValueError(f"Line {item.line_number} quantity or unit is not grounded in raw order text")
 
@@ -300,6 +398,8 @@ async def create_order_from_match_endpoint(
                     raw_unit=item.raw_unit,
                     unit_explicit=item.unit_explicit
                 )
+                matched_line.quantity_text = item.quantity_text
+                matched_line.bonus_quantity = item.bonus_quantity
                 extracted_lines.append(matched_line)
         else:
             if not payload.text or not payload.text.strip():
@@ -332,6 +432,8 @@ async def create_order_from_match_endpoint(
                     raw_unit=item.raw_unit,
                     unit_explicit=item.unit_explicit
                 )
+                res.quantity_text = item.quantity_text
+                res.bonus_quantity = item.bonus_quantity
                 extracted_lines.append(res)
 
         try:
@@ -360,6 +462,8 @@ async def create_order_from_match_endpoint(
         )
     except OperationalError:
         raise
+    except RuntimeError:
+        raise HTTPException(status_code=503, detail="AI provider is temporarily unavailable; retry shortly")
     except Exception as e:
         logger.error("Unexpected server error during order creation: %s", type(e).__name__)
         raise HTTPException(
@@ -380,7 +484,38 @@ def get_order_endpoint(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Order with id {order_id} not found"
         )
-    return order
+    response = OrderResponse.model_validate(order)
+    snapshot_lines = {}
+    if order.status in ("approved", "exported") and isinstance(order.approved_snapshot, dict):
+        snapshot_lines = {
+            item.get("line_number"): item
+            for item in order.approved_snapshot.get("lines", [])
+        }
+    live_lines = {line.id: line for line in order.lines}
+    for dto in response.lines:
+        line = live_lines[dto.id]
+        if order.status in ("approved", "exported"):
+            item = snapshot_lines.get(line.line_number)
+            if item is None or item.get("line_id", line.id) != line.id:
+                dto.order_sheet_conversion_error = "Approved snapshot is unavailable or inconsistent"
+                continue
+            quantity = item.get("quantity")
+            bonus = item.get("bonus_quantity") or 0
+            unit = item.get("unit")
+            ratio = item.get("pieces_per_case")
+        else:
+            quantity = line.final_quantity if line.final_quantity is not None else line.requested_quantity
+            bonus = line.final_bonus_quantity if line.final_bonus_quantity is not None else line.bonus_quantity
+            unit = line.final_unit or line.requested_unit
+            ratio = line.matched_packaging.pieces_per_case if line.matched_packaging else None
+        try:
+            paid, gift, output_unit = convert_order_sheet_quantities(quantity, bonus, unit, ratio)
+            dto.order_sheet_paid_quantity = paid
+            dto.order_sheet_bonus_quantity = gift
+            dto.order_sheet_unit = output_unit
+        except (OrderExportError, TypeError, ValueError) as exc:
+            dto.order_sheet_conversion_error = str(exc)
+    return response
 
 
 @router.post("/{order_id}/approve", response_model=OrderApprovalResponse, status_code=status.HTTP_200_OK)
@@ -439,7 +574,8 @@ def update_line_final_values_endpoint(
             order_id=order_id,
             line_id=line_id,
             final_quantity=payload.final_quantity,
-            final_unit=payload.final_unit
+            final_unit=payload.final_unit,
+            final_bonus_quantity=payload.final_bonus_quantity,
         )
         return line
     except StaleDataError:

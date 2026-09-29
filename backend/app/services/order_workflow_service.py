@@ -3,13 +3,14 @@ from datetime import datetime, timezone
 import uuid
 import math
 from sqlalchemy.orm import Session
-from sqlalchemy import select
+from sqlalchemy import select, func
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from backend.app.models.order import Order, OrderLine, MatchCandidate
 from backend.app.models.company import Company
 from backend.app.models.customer import Customer
 from backend.app.models.product import Product
-from backend.app.models.memory import HumanCorrection
+from backend.app.models.memory import HumanCorrection, CompanyProductUnitPreference
 from backend.app.schemas.workflow import (
     OrderStatus,
     OrderLineStatus,
@@ -117,6 +118,8 @@ class OrderWorkflowService:
                     requested_unit=line_res.unit,
                     raw_unit=line_res.raw_unit,
                     unit_explicit=line_res.unit_explicit,
+                    quantity_text=line_res.quantity_text,
+                    bonus_quantity=line_res.bonus_quantity,
                     matched_product_id=matched_prod_id,
                     matched_packaging_id=line_res.matched_packaging_id,
                     final_sku=final_sku,
@@ -329,7 +332,8 @@ class OrderWorkflowService:
         order_id: int,
         line_id: int,
         final_quantity: Optional[float] = None,
-        final_unit: Optional[str] = None
+        final_unit: Optional[str] = None,
+        final_bonus_quantity: Optional[float] = None,
     ) -> OrderLine:
         """
         Allows operator to adjust approved values (quantity, unit)
@@ -358,11 +362,17 @@ class OrderWorkflowService:
                     raise ValueError("Quantity must be greater than zero")
                 order_line.final_quantity = final_quantity
 
+            if final_bonus_quantity is not None:
+                if not math.isfinite(final_bonus_quantity) or final_bonus_quantity < 0:
+                    raise ValueError("Bonus quantity must be zero or greater")
+                order_line.final_bonus_quantity = final_bonus_quantity
+
             if final_unit is not None:
                 canonical_unit, raw_unit, _ = resolve_unit(final_unit)
                 if canonical_unit == "unknown" or canonical_unit not in ("piece", "kg", "case", "pallet") or not final_unit.strip():
                     raise ValueError(f"Unknown or invalid unit '{final_unit}'. Supported: piece, kg, case, pallet")
 
+                unit_changed = canonical_unit != (order_line.final_unit or order_line.requested_unit)
                 if order_line.matched_product_id:
                     prod = db.get(Product, order_line.matched_product_id)
                     if prod:
@@ -372,6 +382,17 @@ class OrderWorkflowService:
                         order_line.matched_packaging_id = package_id
 
                 order_line.final_unit = canonical_unit
+
+                if unit_changed and order_line.matched_product_id:
+                    preference = sqlite_insert(CompanyProductUnitPreference).values(
+                        company_id=order.company_id,
+                        product_id=order_line.matched_product_id,
+                        unit=canonical_unit,
+                    )
+                    db.execute(preference.on_conflict_do_update(
+                        index_elements=["company_id", "product_id"],
+                        set_={"unit": canonical_unit, "updated_at": func.now()},
+                    ))
 
             db.commit()
             db.refresh(order_line)
@@ -444,6 +465,9 @@ class OrderWorkflowService:
                 raise OrderApprovalError(
                     f"Order line {line.line_number} has non-positive quantity."
                 )
+            bonus = line.final_bonus_quantity if line.final_bonus_quantity is not None else line.bonus_quantity
+            if not math.isfinite(bonus) or bonus < 0:
+                raise OrderApprovalError(f"Order line {line.line_number} has an invalid free quantity.")
 
         try:
             order.version += 1
@@ -481,6 +505,8 @@ class OrderWorkflowService:
                         "unit": l.final_unit or l.requested_unit,
                         "requested_quantity": l.requested_quantity,
                         "requested_unit": l.requested_unit,
+                        "quantity_text": l.quantity_text,
+                        "bonus_quantity": l.final_bonus_quantity if l.final_bonus_quantity is not None else l.bonus_quantity,
                         "confidence_score": round(l.confidence_score, 2),
                         "status": l.status,
                         "barcode": (l.matched_product.barcode or "") if l.matched_product else "",

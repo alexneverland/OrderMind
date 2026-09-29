@@ -38,6 +38,9 @@ def resolve_product_packaging(
     if unit == "unknown":
         return False, None, "Unknown requested unit"
 
+    if unit in {"piece", "kg"}:
+        return True, None, "Directly requested measurement"
+
     if unit == normalize_unit(product.unit):
         return True, None, "Product base unit"
 

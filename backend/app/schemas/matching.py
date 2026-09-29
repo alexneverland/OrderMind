@@ -69,6 +69,8 @@ class LineMatchResult(BaseModel):
     unit: str
     raw_unit: Optional[str] = None
     unit_explicit: bool = False
+    quantity_text: Optional[str] = None
+    bonus_quantity: float = 0
     best_match: Optional[MatchedProductInfo] = None
     matched_packaging_id: Optional[int] = None
     final_unit: Optional[str] = None

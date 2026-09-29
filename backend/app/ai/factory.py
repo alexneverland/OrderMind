@@ -2,12 +2,12 @@ from typing import Optional, Dict, Type, Set
 from backend.app.ai.base import BaseAIProvider
 from backend.app.ai.mock_provider import MockAIProvider
 from backend.app.ai.gemini_provider import GeminiProvider
-from backend.app.ai.stubs import OpenAIProvider, AnthropicProvider, VertexProvider
+from backend.app.ai.remote_providers import OpenAIProvider, AnthropicProvider, VertexProvider
 from backend.app.config import settings
 
 # Explicit provider capability classification
-IMPLEMENTED_PROVIDERS: Set[str] = {"mock", "gemini"}
-PLANNED_PROVIDERS: Set[str] = {"openai", "anthropic", "vertex"}
+IMPLEMENTED_PROVIDERS: Set[str] = {"mock", "gemini", "openai", "anthropic", "vertex"}
+PLANNED_PROVIDERS: Set[str] = set()
 
 PROVIDER_MAP: Dict[str, Type[BaseAIProvider]] = {
     "mock": MockAIProvider,
@@ -20,9 +20,9 @@ PROVIDER_MAP: Dict[str, Type[BaseAIProvider]] = {
 PROVIDER_STATUS: Dict[str, str] = {
     "mock": "implemented",
     "gemini": "implemented",
-    "openai": "planned",
-    "anthropic": "planned",
-    "vertex": "planned",
+    "openai": "implemented",
+    "anthropic": "implemented",
+    "vertex": "implemented",
 }
 
 

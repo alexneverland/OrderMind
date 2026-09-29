@@ -231,6 +231,14 @@ def test_deterministic_grounding_quantity_and_unit():
     assert is_quantity_grounded_in_span(2.5, "2,5 κιλά SKU-100", "2,5 κιλά SKU-100", "SKU-100")
     assert not is_quantity_grounded_in_span(100.0, "2 τεμάχια SKU-100", "2 τεμάχια SKU-100", "SKU-100")
     assert not is_quantity_grounded_in_span(2.0, "2 κιβώτια 12 τεμάχια SKU-100", "2 κιβώτια 12 τεμάχια SKU-100", "SKU-100")
+    row = "180406 | ΠΑΡΙΖΑ 3.0 ΚΙΛ | ΚΙΛ | 35"
+    assert is_quantity_grounded_in_span(35, row, row, "180406", "35")
+    assert not is_quantity_grounded_in_span(3, row, row, "180406", "35")
+    assert not is_quantity_grounded_in_span(10, "10+1", "10+1", bonus_quantity=1)
+    assert is_quantity_grounded_in_span(10, "10KIB+1KIB", "10KIB+1KIB", quantity_text="10KIB+1KIB", bonus_quantity=1)
+    assert not is_quantity_grounded_in_span(10, "10+100", "10+100", quantity_text="10+1", bonus_quantity=1)
+    assert is_unit_grounded_in_span("piece", None, False, row, row, "180406", "35")
+    assert not is_unit_grounded_in_span("kg", "ΚΙΛ", True, row, row, "180406", "35")
 
     # Default quantity 1.0 is grounded when no explicit number is present
     assert is_quantity_grounded_in_span(1.0, "γαλοπουλα καπνιστη", "γαλοπουλα καπνιστη") is True

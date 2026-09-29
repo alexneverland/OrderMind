@@ -9,6 +9,7 @@ class ExportFormat(str, Enum):
     XLSX = "xlsx"
     CSV = "csv"
     JSON = "json"
+    ORDER_SHEET = "order_sheet"
 
 
 class MappingType(str, Enum):
@@ -43,7 +44,7 @@ class ExportProfileCreate(BaseModel):
     delimiter: str = Field(default=",", description="Delimiter for CSV format: ',', ';', '\t', '|'")
     include_header: bool = Field(default=True, description="Whether to write header row in Excel/CSV")
     encoding: str = Field(default="utf-8-sig", description="Encoding for CSV: utf-8, utf-8-sig")
-    mappings: List[ExportFieldMappingCreate] = Field(..., min_length=1, description="List of column mappings")
+    mappings: List[ExportFieldMappingCreate] = Field(default_factory=list, description="List of column mappings; empty for the fixed four-column order sheet")
 
 
 class ExportProfileUpdate(BaseModel):

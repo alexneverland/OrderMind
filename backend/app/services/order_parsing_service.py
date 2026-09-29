@@ -1,5 +1,6 @@
 import time
 import logging
+import re
 from typing import Optional, Dict, Any, List
 from sqlalchemy.orm import Session
 
@@ -17,6 +18,7 @@ from backend.app.core.text_normalizer import (
     normalize_text,
     is_quantity_grounded_in_span,
     is_unit_grounded_in_span,
+    quantity_expression_units,
 )
 
 logger = logging.getLogger("ordermind.parsing")
@@ -79,15 +81,41 @@ class OrderParsingService:
             # 6. Build sequential, grounded, validated lines
             order_lines: List[NormalizedOrderLine] = []
             for idx, draft in enumerate(draft_items, start=1):
+                expression_units = quantity_expression_units(draft.quantity_text)
+                distinct_units = {unit for unit, _ in expression_units}
+                if len(distinct_units) > 1:
+                    raise ValueError(
+                        f"Item '{draft.original_text}' has different units in one quantity expression; "
+                        "split or correct it before approval."
+                    )
+                if expression_units:
+                    # A single explicit unit applies to both paid and bare bonus
+                    # quantities regardless of word order or spacing.
+                    draft = draft.model_copy(update={
+                        "unit": expression_units[0][0],
+                        "raw_unit": expression_units[0][1],
+                        "unit_explicit": True,
+                    })
+                if draft.quantity_text and not re.search(r"[^\W\d_]", draft.quantity_text, re.UNICODE):
+                    # A bare numeric expression has no requested unit. A unit
+                    # elsewhere in the product name or spreadsheet is metadata.
+                    draft = draft.model_copy(update={
+                        "unit": "piece", "raw_unit": None, "unit_explicit": False,
+                    })
                 # Grounding verification: Check that draft original_text or product_phrase exists in input
                 if not normalize_text(draft.original_text) or normalize_text(draft.original_text) not in normalize_text(normalized_input.raw_text):
                     raise ValueError(
                         f"Extracted item '{draft.original_text}' cannot be grounded in customer input (hallucination detected)."
                     )
+                if normalize_text(draft.product_phrase) not in normalize_text(draft.original_text):
+                    raise ValueError(
+                        f"Extracted product '{draft.product_phrase}' cannot be grounded in its order item."
+                    )
 
                 # Quantity grounding check
                 if not is_quantity_grounded_in_span(
-                    draft.quantity, draft.original_text, normalized_input.raw_text, draft.product_phrase
+                    draft.quantity, draft.original_text, normalized_input.raw_text,
+                    draft.product_phrase, draft.quantity_text, draft.bonus_quantity,
                 ):
                     raise ValueError(
                         f"Extracted quantity {draft.quantity} for item '{draft.original_text}' cannot be grounded in customer input (contradictory extraction)."
@@ -96,7 +124,8 @@ class OrderParsingService:
                 # Unit grounding check
                 if not is_unit_grounded_in_span(
                     draft.unit, draft.raw_unit, draft.unit_explicit,
-                    draft.original_text, normalized_input.raw_text, draft.product_phrase
+                    draft.original_text, normalized_input.raw_text,
+                    draft.product_phrase, draft.quantity_text,
                 ):
                     raise ValueError(
                         f"Extracted unit '{draft.unit}' for item '{draft.original_text}' cannot be grounded in customer input (contradictory extraction)."
@@ -109,7 +138,9 @@ class OrderParsingService:
                     quantity=draft.quantity,
                     unit=draft.unit,
                     raw_unit=draft.raw_unit,
-                    unit_explicit=draft.unit_explicit
+                    unit_explicit=draft.unit_explicit,
+                    quantity_text=draft.quantity_text,
+                    bonus_quantity=draft.bonus_quantity,
                 ))
 
             logger.info(
