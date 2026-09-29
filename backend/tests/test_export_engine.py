@@ -14,6 +14,7 @@ from backend.app.schemas.workflow import OrderStatus
 from backend.app.schemas.matching import LineMatchResult, MatchedProductInfo, ConfidenceResult, MatchDecision
 from backend.app.schemas.export import (
     ExportProfileCreate,
+    ExportProfileUpdate,
     ExportFieldMappingCreate,
     MappingType,
 )
@@ -32,6 +33,7 @@ def setup_export_data(db_session: Session, empty_master_fields: bool = False):
     company = Company(name="Hellas Food Logistics")
     db_session.add(company)
     db_session.flush()
+    db_session.add(CompanyBusinessSettings(company_id=company.id, unitless_order_behavior="piece"))
 
     customer = Customer(
         company_id=company.id,
@@ -119,6 +121,7 @@ def test_export_profile_validation_rules(db_session):
             )
         )
 
+
     # 3. Invalid source_field rejected
     with pytest.raises(ExportProfileValidationError, match="Invalid source_field"):
         ExportProfileService.create_profile(
@@ -144,6 +147,21 @@ def test_export_profile_validation_rules(db_session):
                 ]
             )
         )
+
+
+def test_order_sheet_bonus_marker_can_be_cleared(db_session):
+    company = Company(name="Marker company")
+    db_session.add(company)
+    db_session.commit()
+    profile = ExportProfileService.create_profile(db_session, ExportProfileCreate(
+        company_id=company.id, name="Gift sheet", format="order_sheet", mappings=[],
+        bonus_separate_row=True, bonus_marker="Α",
+    ))
+    updated = ExportProfileService.update_profile(db_session, profile.id, ExportProfileUpdate(
+        bonus_separate_row=False, bonus_marker=None,
+    ))
+    assert updated.bonus_separate_row is False
+    assert updated.bonus_marker is None
 
 
 def test_export_xlsx(db_session):

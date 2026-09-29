@@ -153,7 +153,7 @@ async def test_ai_quantity_evidence_handles_two_products_and_bonus(db_session):
         db_session, company.id, customer.id, row
     )
     assert [(item.product_phrase, item.quantity, item.bonus_quantity, item.unit) for item in order.items] == [
-        ("131382", 56.0, 6.0, "piece"), ("180534", 10.0, 1.0, "case"),
+        ("131382", 56.0, 6.0, "unknown"), ("180534", 10.0, 1.0, "case"),
     ]
 
 
@@ -238,4 +238,4 @@ async def test_ai_cannot_take_measure_column_as_order_unit(db_session):
         db_session, company.id, customer.id, row
     )
     assert order.items[0].quantity == 35
-    assert order.items[0].unit == "piece"
+    assert order.items[0].unit == "unknown"

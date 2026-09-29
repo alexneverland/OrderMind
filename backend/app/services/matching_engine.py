@@ -62,6 +62,8 @@ class MatchingEngine:
         raw_unit: Optional[str] = None,
         unit_explicit: bool = False
     ) -> LineMatchResult:
+        if not unit_explicit and raw_unit is None:
+            unit = "unknown"
         norm_phrase = normalize_text(product_phrase)
         raw_phrase = product_phrase.strip()
         stem_phrase_str = stem_phrase(norm_phrase)
@@ -377,34 +379,52 @@ class MatchingEngine:
             for ev in best_cand_dto.evidence
         ) else None
         business_settings = effective_business_settings(db, company_id)
-        final_unit = unit
+        supported_units = {"piece", "case", "kg", "pallet"}
+        final_unit = unit if unit in supported_units and unit_explicit else None
         preference_applied = False
         if not unit_explicit:
             behavior = business_settings.unitless_order_behavior
-            if behavior == "product_master_unit":
-                final_unit = normalize_unit(best_prod.unit)
+            if behavior == "piece":
+                final_unit = "piece"
+            elif behavior == "product_master_unit":
+                product_unit = normalize_unit(best_prod.unit)
+                if product_unit in supported_units:
+                    final_unit = product_unit
+                else:
+                    best_conf.decision = MatchDecision.NEEDS_REVIEW
+                    best_conf.reasons.append("Product master unit is unknown; select a final unit")
             elif behavior == "learned_product_preference":
                 preference = db.execute(select(CompanyProductUnitPreference).where(
                     CompanyProductUnitPreference.company_id == company_id,
                     CompanyProductUnitPreference.product_id == best_prod.id,
                 )).scalar_one_or_none()
-                if preference and preference.unit != unit:
+                if preference and preference.unit in supported_units:
                     final_unit = preference.unit
                     preference_applied = True
                     best_conf.decision = MatchDecision.NEEDS_REVIEW
                     best_conf.reasons.append(f"Previous operator unit correction suggests '{final_unit}'; verify this order")
+                else:
+                    best_conf.decision = MatchDecision.NEEDS_REVIEW
+                    best_conf.reasons.append("No learned product unit is available; select a final unit")
             elif behavior == "require_review":
                 best_conf.decision = MatchDecision.NEEDS_REVIEW
                 best_conf.reasons.append("Customer did not specify an order unit; verify it")
+        elif final_unit is None:
+            best_conf.decision = MatchDecision.NEEDS_REVIEW
+            best_conf.reasons.append("Customer unit is unknown; select a final unit")
         matched_packaging_id = None
         if packaging_identifier:
             matching_package = [p for p in best_prod.packagings
                                 if raw_phrase in (p.package_code, p.packaging_barcode)]
-            if len(matching_package) == 1 and not unit_explicit:
+            if len(matching_package) == 1 and not unit_explicit and final_unit is not None:
                 final_unit = packaging_unit(matching_package[0].package_type)
                 if final_unit == "unknown":
                     final_unit = normalize_unit(matching_package[0].unit)
-        if unit_explicit or packaging_identifier or preference_applied or final_unit != unit:
+                if final_unit not in supported_units:
+                    final_unit = None
+                    best_conf.decision = MatchDecision.NEEDS_REVIEW
+                    best_conf.reasons.append("Packaging unit is unknown; select a final unit")
+        if final_unit in supported_units and (unit_explicit or packaging_identifier or preference_applied or final_unit != unit):
             compatible, matched_packaging_id, reason = resolve_product_packaging(
                 best_prod, final_unit, packaging_identifier
             )

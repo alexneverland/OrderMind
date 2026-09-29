@@ -33,15 +33,15 @@ def test_resolve_unit_unknown_explicit_does_not_become_piece():
 def test_resolve_unit_unspecified_behavior():
     """
     When no unit is mentioned (None or empty string):
-    canonical='piece', raw_unit=None, unit_explicit=False.
+    canonical='unknown', raw_unit=None, unit_explicit=False.
     """
     canonical, raw, explicit = resolve_unit(None)
-    assert canonical == "piece"
+    assert canonical == "unknown"
     assert raw is None
     assert explicit is False
 
     canonical_empty, raw_empty, explicit_empty = resolve_unit("   ")
-    assert canonical_empty == "piece"
+    assert canonical_empty == "unknown"
     assert raw_empty is None
     assert explicit_empty is False
 

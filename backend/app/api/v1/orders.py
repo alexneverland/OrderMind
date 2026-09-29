@@ -350,7 +350,7 @@ async def create_order_from_match_endpoint(
                     orig_text = it.get("original_text", "")
                     phrase = it.get("product_phrase", orig_text)
                     qty = it.get("quantity") if it.get("quantity") is not None else (it.get("requested_quantity") or 1.0)
-                    unit = it.get("unit") if it.get("unit") is not None else (it.get("requested_unit") or "piece")
+                    unit = it.get("unit") if it.get("unit") is not None else (it.get("requested_unit") or "unknown")
                     raw_unit = it.get("raw_unit")
                     unit_explicit = it.get("unit_explicit", False)
                     quantity_text = it.get("quantity_text")
@@ -364,7 +364,7 @@ async def create_order_from_match_endpoint(
                         qty = getattr(it, "requested_quantity", 1.0)
                     unit = getattr(it, "unit", None)
                     if unit is None:
-                        unit = getattr(it, "requested_unit", "piece")
+                        unit = getattr(it, "requested_unit", "unknown")
                     raw_unit = getattr(it, "raw_unit", None)
                     unit_explicit = getattr(it, "unit_explicit", False)
                     quantity_text = getattr(it, "quantity_text", None)

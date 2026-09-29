@@ -177,8 +177,10 @@ class ExportProfileService:
             profile.encoding = enc
 
         for field in ("bonus_separate_row", "bonus_marker", "quantity_output_unit", "convert_case_using_pieces_per_case"):
-            value = getattr(payload, field)
-            if value is not None:
+            if field in payload.model_fields_set:
+                value = getattr(payload, field)
+                if value is None and field != "bonus_marker":
+                    raise ExportProfileValidationError(f"{field} cannot be null")
                 setattr(profile, field, value)
 
         if payload.mappings is not None:

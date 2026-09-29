@@ -45,6 +45,8 @@ export type OrderLine = {
   product_phrase: string;
   requested_quantity: number;
   requested_unit: string;
+  raw_unit?: string | null;
+  unit_explicit?: boolean;
   quantity_text?: string | null;
   bonus_quantity?: number;
   final_bonus_quantity?: number | null;

@@ -112,7 +112,10 @@ class OrderWorkflowService:
 
                 matched_prod_id = line_res.best_match.product_id if line_res.best_match else None
                 final_sku = line_res.best_match.sku if line_res.best_match else None
-                final_unit = line_res.final_unit or line_res.unit
+                requested_unit = line_res.unit if line_res.unit_explicit else "unknown"
+                final_unit = line_res.final_unit or (requested_unit if requested_unit in {"piece", "case", "kg", "pallet"} else None)
+                if final_unit is None and not line_res.unit_explicit and business_settings.unitless_order_behavior == "piece":
+                    final_unit = "piece"
 
                 order_line = OrderLine(
                     order_id=order.id,
@@ -120,7 +123,7 @@ class OrderWorkflowService:
                     original_text=line_res.original_text,
                     product_phrase=line_res.product_phrase,
                     requested_quantity=line_res.quantity,
-                    requested_unit=line_res.unit,
+                    requested_unit=requested_unit,
                     raw_unit=line_res.raw_unit,
                     unit_explicit=line_res.unit_explicit,
                     quantity_text=line_res.quantity_text,
@@ -459,6 +462,8 @@ class OrderWorkflowService:
             if not product or product.company_id != order.company_id or not product.active:
                 raise OrderApprovalError(f"Order line {line.line_number} has an invalid or inactive product.")
             unit = line.final_unit or line.requested_unit
+            if unit not in {"piece", "case", "kg", "pallet"}:
+                raise OrderApprovalError(f"Order line {line.line_number} has no resolved final unit.")
             compatible, package_id, reason = resolve_product_packaging(
                 product, unit, line.product_phrase
             )

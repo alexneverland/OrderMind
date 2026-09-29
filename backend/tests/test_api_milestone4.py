@@ -275,7 +275,7 @@ def test_api_export_profile_crud_and_patch_line_values(client: TestClient, db_se
     assert patched_line["final_quantity"] == 25.0
     assert patched_line["final_unit"] == "piece"
     assert patched_line["requested_quantity"] == 10.0
-    assert patched_line["requested_unit"] == "piece"
+    assert patched_line["requested_unit"] == "unknown"
 
     # Attempting to mutate product via PATCH has no effect on product
     orig_product_id = patched_line["matched_product_id"]

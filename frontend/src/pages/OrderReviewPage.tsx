@@ -190,7 +190,7 @@ function LineCard({
   const [quantity, setQuantity] = useState(
     String(line.final_quantity ?? line.requested_quantity),
   );
-  const [unit, setUnit] = useState(line.final_unit ?? line.requested_unit);
+  const [unit, setUnit] = useState(line.final_unit ?? (line.requested_unit === "unknown" ? "unknown" : line.requested_unit));
   const [bonusQuantity, setBonusQuantity] = useState(String(line.final_bonus_quantity ?? line.bonus_quantity ?? 0));
   const [busy, setBusy] = useState(false);
   const editable = order.status === "pending_review";
@@ -213,7 +213,7 @@ function LineCard({
   const finalBonusQuantity = line.final_bonus_quantity ?? line.bonus_quantity ?? 0;
   const changed =
     finalQuantity !== line.requested_quantity ||
-    finalUnit !== line.requested_unit ||
+    (finalUnit !== null && finalUnit !== line.requested_unit) ||
     finalBonusQuantity !== (line.bonus_quantity ?? 0);
   return (
     <article className="line-card">
@@ -245,7 +245,7 @@ function LineCard({
         <div>
           <span className="field-label">Requested</span>
           <strong>
-            {line.requested_quantity} {line.requested_unit}
+            {line.requested_quantity} {line.unit_explicit ? (line.requested_unit === "unknown" ? line.raw_unit || "unknown unit" : line.requested_unit) : "· unit not specified"}
           </strong>
           {!!line.bonus_quantity && <small> + {line.bonus_quantity} δώρο</small>}
         </div>
@@ -254,7 +254,7 @@ function LineCard({
             Final {changed && <em>changed</em>}
           </span>
           <strong>
-            {finalQuantity} {finalUnit}
+            {finalQuantity} {finalUnit === "unknown" || !finalUnit ? "· unit not set" : finalUnit}
           </strong>
           {!!finalBonusQuantity && <small> + {finalBonusQuantity} δώρο</small>}
         </div>
@@ -356,6 +356,7 @@ function LineCard({
           <label>
             Final unit
             <select value={unit} onChange={(e) => setUnit(e.target.value)}>
+              {unit === "unknown" && <option value="unknown" disabled>Choose unit</option>}
               {units.map((u) => (
                 <option key={u} value={u}>
                   {u}
@@ -370,7 +371,7 @@ function LineCard({
           </label>
           <button
             className="button primary"
-            disabled={busy || Number(quantity) <= 0}
+            disabled={busy || Number(quantity) <= 0 || unit === "unknown"}
           >
             Save values
           </button>

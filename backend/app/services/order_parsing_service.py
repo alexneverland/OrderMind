@@ -104,7 +104,7 @@ class OrderParsingService:
                     # A bare numeric expression has no requested unit. A unit
                     # elsewhere in the product name or spreadsheet is metadata.
                     draft = draft.model_copy(update={
-                        "unit": "piece", "raw_unit": None, "unit_explicit": False,
+                        "unit": "unknown", "raw_unit": None, "unit_explicit": False,
                     })
                 # Grounding verification: Check that draft original_text or product_phrase exists in input
                 if not normalize_text(draft.original_text) or normalize_text(draft.original_text) not in normalize_text(normalized_input.raw_text):

@@ -37,7 +37,7 @@ ABSOLUTE BOUNDARIES AND CONSTRAINTS:
 5. Units: Extract the verbatim unit as written by customer if mentioned (e.g. 'κούτες', 'κιλά', 'τεμάχια', 'trays', 'κιβώτια'). If NO unit is mentioned, return null for unit. Never invent or assume a unit.
 6. Grounding: The original_text must be the exact verbatim snippet from the customer input.
 7. Read each layout semantically: columns may vary, unrelated columns or headings may intervene, and one physical row can contain multiple products. Return one item per requested product. Include an exact quantity_text substring for each item. Preserve an explicitly requested free quantity separately. A bare free number shares the explicit unit of its paid quantity. Never infer bonus meaning from a plus sign unless the supplied company policy enables it. If two quantities explicitly use different units, preserve both unit tokens in quantity_text.
-8. A product description or an M.M column can mention kilos or other units; that is product metadata. Set the order unit only from the quantity expression. A bare quantity means pieces. If the quantity explicitly says kilos or cases, return that unit exactly.
+8. A product description or an M.M column can mention kilos or other units; that is product metadata. Set the order unit only from the quantity expression. If no order unit is explicitly stated, return null for unit; company policy will resolve it later. If the quantity explicitly says kilos or cases, return that unit exactly.
 """
 
 
