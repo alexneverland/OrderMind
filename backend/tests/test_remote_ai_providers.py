@@ -8,7 +8,7 @@ from backend.app.schemas.adapters import NormalizedInput
 
 
 ORDER_JSON = json.dumps({"items": [{
-    "original_text": "3 boxes olives", "product_phrase": "olives", "quantity": 3, "unit": "boxes",
+    "original_text": "3 boxes olives", "product_phrase": "olives", "quantity": 3, "quantity_text": "3 boxes", "unit": "boxes",
 }]})
 
 

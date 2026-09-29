@@ -45,6 +45,17 @@ def test_text_excel_word_and_pdf_preview(client):
     assert "Gemini" in response.json()["detail"]
 
 
+def test_excel_preview_preserves_blank_columns_for_ai_context(client):
+    workbook = Workbook()
+    workbook.active.append(["SKU", "Description", "M.M", "Qty", "Other", "SKU", "Description", "Qty"])
+    workbook.active.append(["111315", "Paris", "TEM", None, "note", "180534", "Shoulder", "10+1"])
+    data = BytesIO()
+    workbook.save(data)
+    response = upload(client, "mixed.xlsx", data.getvalue())
+    assert response.status_code == 200
+    assert "111315 | Paris | TEM |  | note | 180534 | Shoulder | 10+1" in response.json()["text"]
+
+
 def test_upload_rejects_unsupported_or_oversize_content(client, monkeypatch):
     assert upload(client, "old.doc", b"legacy").status_code == 400
     assert upload(client, "photo.jpg", b"not a jpeg").status_code == 400

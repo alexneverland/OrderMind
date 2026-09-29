@@ -45,11 +45,18 @@ export type OrderLine = {
   product_phrase: string;
   requested_quantity: number;
   requested_unit: string;
+  quantity_text?: string | null;
+  bonus_quantity?: number;
+  final_bonus_quantity?: number | null;
   matched_product_id: number | null;
   matched_product: ProductBrief | null;
   final_sku: string | null;
   final_quantity: number | null;
   final_unit: string | null;
+  order_sheet_paid_quantity?: number | null;
+  order_sheet_bonus_quantity?: number | null;
+  order_sheet_unit?: string | null;
+  order_sheet_conversion_error?: string | null;
   confidence_score: number;
   confidence_reasons: string[];
   status: string;

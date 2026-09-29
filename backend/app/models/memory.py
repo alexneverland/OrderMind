@@ -33,6 +33,21 @@ class CustomerProductAlias(Base):
     product = relationship("Product", back_populates="customer_aliases", foreign_keys=[product_id])
 
 
+class CompanyProductUnitPreference(Base):
+    """Operator-confirmed unit for otherwise unitless orders of a product."""
+    __tablename__ = "company_product_unit_preferences"
+    __table_args__ = (
+        UniqueConstraint("company_id", "product_id", name="uq_company_product_unit_preference"),
+        ForeignKeyConstraint(["product_id", "company_id"], ["products.id", "products.company_id"], ondelete="CASCADE", name="fk_unit_preference_product_company"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    company_id = Column(Integer, nullable=False, index=True)
+    product_id = Column(Integer, nullable=False, index=True)
+    unit = Column(String(50), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
 class HumanCorrection(Base):
     """
     Audit log of every operator correction.

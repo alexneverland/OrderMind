@@ -332,6 +332,24 @@ export function ProfilesPage() {
       setActionError((e as Error).message);
     }
   };
+  const createOrderSheet = async () => {
+    if (!companyId) return;
+    setActionError("");
+    try {
+      await createProfile({
+        company_id: companyId,
+        name: "OrderMind 4-column order sheet",
+        format: "order_sheet",
+        delimiter: ",",
+        encoding: "utf-8-sig",
+        include_header: false,
+        mappings: [],
+      });
+      await refresh();
+    } catch (e) {
+      setActionError((e as Error).message);
+    }
+  };
   return (
     <>
       <div className="page-head">
@@ -340,13 +358,14 @@ export function ProfilesPage() {
           <h1>Export profiles</h1>
           <p>Map approved order data to your receiving format.</p>
         </div>
-        <button
-          className="button primary"
-          onClick={() => setEditing(null)}
-          disabled={!companyId}
-        >
-          + Create profile
-        </button>
+        <div className="row-actions">
+          <button className="button" onClick={() => void createOrderSheet()} disabled={!companyId || !!profiles?.some((p) => p.format === "order_sheet")}>
+            + 4-column order sheet
+          </button>
+          <button className="button primary" onClick={() => setEditing(null)} disabled={!companyId}>
+            + Create profile
+          </button>
+        </div>
       </div>
       <Alert message={error || actionError} />
       <section className="panel">
@@ -379,12 +398,12 @@ export function ProfilesPage() {
                     <td>{p.field_mappings.length}</td>
                     <td>
                       <div className="row-actions">
-                        <button
+                        {p.format !== "order_sheet" && <button
                           className="text-button"
                           onClick={() => setEditing(p)}
                         >
                           Edit
-                        </button>
+                        </button>}
                         <button
                           className="text-button danger"
                           onClick={() => void remove(p)}

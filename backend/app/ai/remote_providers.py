@@ -29,6 +29,8 @@ def _drafts(raw: str) -> List[NormalizedOrderLineDraft]:
             unit=unit,
             raw_unit=raw_unit,
             unit_explicit=unit_explicit,
+            quantity_text=item.quantity_text,
+            bonus_quantity=item.bonus_quantity,
         ))
     return results
 
@@ -69,7 +71,7 @@ class OpenAIProvider(BaseAIProvider):
     async def extract_order(self, normalized_input: NormalizedInput, context: Optional[Dict[str, Any]] = None) -> List[NormalizedOrderLineDraft]:
         try:
             return _drafts(await self._complete(
-                "Return only JSON with an items array. Each item has original_text (exact substring), product_phrase, positive quantity, and verbatim unit or null. Customer order:\n" + normalized_input.raw_text
+                "Return only JSON with an items array. Each item has original_text (exact substring), product_phrase, positive paid quantity, verbatim quantity_text, bonus_quantity (zero if none), and verbatim unit or null. Customer order:\n" + normalized_input.raw_text
             ))
         except Exception as exc:
             raise RuntimeError("OpenAI extraction provider is unavailable") from exc
@@ -110,7 +112,7 @@ class AnthropicProvider(BaseAIProvider):
     async def extract_order(self, normalized_input: NormalizedInput, context: Optional[Dict[str, Any]] = None) -> List[NormalizedOrderLineDraft]:
         try:
             return _drafts(await self._complete(
-                "Return only JSON with an items array. Each item has original_text (exact substring), product_phrase, positive quantity, and verbatim unit or null. Customer order:\n" + normalized_input.raw_text
+                "Return only JSON with an items array. Each item has original_text (exact substring), product_phrase, positive paid quantity, verbatim quantity_text, bonus_quantity (zero if none), and verbatim unit or null. Customer order:\n" + normalized_input.raw_text
             ))
         except Exception as exc:
             raise RuntimeError("Anthropic extraction provider is unavailable") from exc

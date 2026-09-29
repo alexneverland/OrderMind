@@ -92,10 +92,11 @@ export const updateFinalValues = (
   lineId: number,
   quantity: number,
   unit: string,
+  bonusQuantity?: number,
 ) =>
   request(`/orders/${orderId}/lines/${lineId}`, {
     method: "PATCH",
-    body: JSON.stringify({ final_quantity: quantity, final_unit: unit }),
+    body: JSON.stringify({ final_quantity: quantity, final_unit: unit, final_bonus_quantity: bonusQuantity }),
   });
 export const approveOrder = (id: number) =>
   request(`/orders/${id}/approve`, { method: "POST" });

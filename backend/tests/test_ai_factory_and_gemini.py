@@ -48,18 +48,21 @@ async def test_gemini_provider_async_call_and_unit_resolution():
                 "original_text": "3 κούτες ζαμπόν 500",
                 "product_phrase": "ζαμπόν 500",
                 "quantity": 3.0,
+                "quantity_text": "3 κούτες",
                 "unit": "κούτες"
             },
             {
                 "original_text": "5 trays μπέικον",
                 "product_phrase": "μπέικον",
                 "quantity": 5.0,
+                "quantity_text": "5 trays",
                 "unit": "trays"
             },
             {
                 "original_text": "10 κόκκινα",
                 "product_phrase": "κόκκινα",
                 "quantity": 10.0,
+                "quantity_text": "10",
                 "unit": None
             }
         ]
@@ -126,7 +129,7 @@ async def test_gemini_provider_retries_transient_overload(monkeypatch):
     mock_client = MagicMock()
     response = MagicMock()
     response.text = json.dumps({"items": [{
-        "original_text": "3 olives", "product_phrase": "olives", "quantity": 3, "unit": None,
+        "original_text": "3 olives", "product_phrase": "olives", "quantity": 3, "quantity_text": "3", "unit": None,
     }]})
     mock_client.aio.models.generate_content = AsyncMock(side_effect=[Overloaded(), response])
     provider._client = mock_client

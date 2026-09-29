@@ -117,3 +117,120 @@ async def test_order_parsing_service_validation_errors(db_session):
     # 2. Customer does not belong to company 1
     with pytest.raises(ValueError, match="does not belong to Company"):
         await service.parse_order(db_session, company_id=comp1.id, customer_id=cust_comp2.id, text="3 κούτες ζαμπόν")
+
+
+@pytest.mark.asyncio
+async def test_ai_quantity_evidence_handles_two_products_and_bonus(db_session):
+    company = Company(name="AI order company")
+    db_session.add(company)
+    db_session.commit()
+    customer = Customer(company_id=company.id, customer_code="AI", customer_name="AI customer")
+    db_session.add(customer)
+    db_session.commit()
+    row = "131382 | ΦΡΑΝΚ 500ΓΡ | TEM | 56+6 | 180534 | ΩΜΟΠΛΑΤΗ | ΚΙΛ | 10KIB+1KIB"
+
+    class Provider(BaseAIProvider):
+        name: str = "evidence"
+
+        async def extract_order(self, normalized_input, context=None):
+            return [
+                NormalizedOrderLineDraft(
+                    original_text="131382 | ΦΡΑΝΚ 500ΓΡ | TEM | 56+6",
+                    product_phrase="131382", quantity=56, bonus_quantity=6,
+                    quantity_text="56+6", unit="piece",
+                ),
+                NormalizedOrderLineDraft(
+                    original_text="180534 | ΩΜΟΠΛΑΤΗ | ΚΙΛ | 10KIB+1KIB",
+                    product_phrase="180534", quantity=10, bonus_quantity=1,
+                    quantity_text="10KIB+1KIB", unit="case", raw_unit="KIB", unit_explicit=True,
+                ),
+            ]
+
+    order = await OrderParsingService(ai_provider=Provider()).parse_order(
+        db_session, company.id, customer.id, row
+    )
+    assert [(item.product_phrase, item.quantity, item.bonus_quantity, item.unit) for item in order.items] == [
+        ("131382", 56.0, 6.0, "piece"), ("180534", 10.0, 1.0, "case"),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("expression", ["10ΚΙΒ+1", "ΚΙΒ 10+1", "10 cases + 1"])
+async def test_bare_bonus_inherits_explicit_quantity_unit(db_session, expression):
+    company = Company(name=f"Bonus unit {expression}")
+    db_session.add(company)
+    db_session.flush()
+    customer = Customer(company_id=company.id, customer_code="BU", customer_name="Bonus buyer")
+    db_session.add(customer)
+    db_session.commit()
+    row = f"180534 | ΩΜΟΠΛΑΤΗ | {expression}"
+
+    class Provider(BaseAIProvider):
+        name: str = "bonus-unit"
+
+        async def extract_order(self, normalized_input, context=None):
+            # A provider may label the bare +1 as a piece. The verbatim
+            # quantity expression is the authority for the shared unit.
+            return [NormalizedOrderLineDraft(
+                original_text=row, product_phrase="180534", quantity=10,
+                bonus_quantity=1, quantity_text=expression, unit="piece",
+            )]
+
+    order = await OrderParsingService(ai_provider=Provider()).parse_order(
+        db_session, company.id, customer.id, row
+    )
+    assert order.items[0].unit == "case"
+    assert order.items[0].bonus_quantity == 1
+    assert order.items[0].unit_explicit is True
+
+
+@pytest.mark.asyncio
+async def test_mixed_explicit_paid_and_bonus_units_are_not_silently_combined(db_session):
+    company = Company(name="Mixed bonus units")
+    db_session.add(company)
+    db_session.flush()
+    customer = Customer(company_id=company.id, customer_code="MU", customer_name="Mixed buyer")
+    db_session.add(customer)
+    db_session.commit()
+    row = "180534 | 10 ΚΙΒ + 1 ΤΕΜ"
+
+    class Provider(BaseAIProvider):
+        name: str = "mixed-units"
+
+        async def extract_order(self, normalized_input, context=None):
+            return [NormalizedOrderLineDraft(
+                original_text=row, product_phrase="180534", quantity=10,
+                bonus_quantity=1, quantity_text="10 ΚΙΒ + 1 ΤΕΜ", unit="case",
+                raw_unit="ΚΙΒ", unit_explicit=True,
+            )]
+
+    with pytest.raises(ValueError, match="different units"):
+        await OrderParsingService(ai_provider=Provider()).parse_order(
+            db_session, company.id, customer.id, row
+        )
+
+
+@pytest.mark.asyncio
+async def test_ai_cannot_take_measure_column_as_order_unit(db_session):
+    company = Company(name="Measure company")
+    db_session.add(company)
+    db_session.commit()
+    customer = Customer(company_id=company.id, customer_code="MM", customer_name="Measure customer")
+    db_session.add(customer)
+    db_session.commit()
+    row = "180406 | ΠΑΡΙΖΑ ΦΟΡΜΑ 3.0 ΚΙΛ | ΚΙΛ | 35"
+
+    class Provider(BaseAIProvider):
+        name: str = "measure"
+
+        async def extract_order(self, normalized_input, context=None):
+            return [NormalizedOrderLineDraft(
+                original_text=row, product_phrase="180406", quantity=35,
+                quantity_text="35", unit="kg", raw_unit="ΚΙΛ", unit_explicit=True,
+            )]
+
+    order = await OrderParsingService(ai_provider=Provider()).parse_order(
+        db_session, company.id, customer.id, row
+    )
+    assert order.items[0].quantity == 35
+    assert order.items[0].unit == "piece"

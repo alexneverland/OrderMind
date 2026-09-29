@@ -254,9 +254,15 @@ def test_api_export_profile_crud_and_patch_line_values(client: TestClient, db_se
 
     resp_invalid_unit = client.patch(
         f"/api/v1/orders/{order_id}/lines/{line_id}",
-        json={"final_unit": "kg"}
+        json={"final_unit": "pallet"}
     )
     assert resp_invalid_unit.status_code == 400
+
+    resp_kg = client.patch(
+        f"/api/v1/orders/{order_id}/lines/{line_id}",
+        json={"final_unit": "kg"}
+    )
+    assert resp_kg.status_code == 200
 
     resp_patch = client.patch(
         f"/api/v1/orders/{order_id}/lines/{line_id}",

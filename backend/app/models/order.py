@@ -84,6 +84,9 @@ class OrderLine(Base):
     requested_unit = Column(String(50), nullable=False, default="piece")
     raw_unit = Column(String(50), nullable=True)
     unit_explicit = Column(Boolean, default=False, nullable=False)
+    quantity_text = Column(String(100), nullable=True)
+    bonus_quantity = Column(Float, nullable=False, default=0.0, server_default="0")
+    final_bonus_quantity = Column(Float, nullable=True)
     
     # Matching output
     matched_product_id = Column(Integer, ForeignKey("products.id", ondelete="SET NULL"), nullable=True, index=True)

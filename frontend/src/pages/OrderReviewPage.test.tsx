@@ -145,6 +145,19 @@ describe("operator review", () => {
     fireEvent.click(screen.getByText("Why this match?"));
     expect(screen.getByText("Customer alias match")).toBeInTheDocument();
   });
+  it("shows paid and free quantities that the four-column export will receive", async () => {
+    current.lines[0].requested_quantity = 10;
+    current.lines[0].requested_unit = "case";
+    current.lines[0].bonus_quantity = 1;
+    current.lines[0].final_quantity = 10;
+    current.lines[0].final_unit = "case";
+    current.lines[0].order_sheet_paid_quantity = 100;
+    current.lines[0].order_sheet_bonus_quantity = 10;
+    current.lines[0].order_sheet_unit = "piece";
+    show();
+    expect(await screen.findByText("100 τεμάχια")).toBeInTheDocument();
+    expect(screen.getByText("+ 10 τεμάχια δώρο (χωριστή γραμμή Α)")).toBeInTheDocument();
+  });
   it("confirms a line and refreshes its status", async () => {
     show();
     fireEvent.click(

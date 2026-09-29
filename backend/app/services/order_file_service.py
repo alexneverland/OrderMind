@@ -49,8 +49,10 @@ def _spreadsheet(content: bytes) -> str:
                     raise OrderFileError("Spreadsheet has more than 1,000 rows per sheet")
                 if len(row) > 30:
                     raise OrderFileError("Spreadsheet has more than 30 columns")
-                cells = [str(value).strip() for value in row if value is not None and str(value).strip()]
-                if cells:
+                cells = [str(value).strip() if value is not None else "" for value in row]
+                if any(cells):
+                    # Preserve empty cells so the AI can infer associations from
+                    # column position even when the sheet layout varies.
                     line = " | ".join(cells)
                     lines.append(line)
                     total_chars += len(line)

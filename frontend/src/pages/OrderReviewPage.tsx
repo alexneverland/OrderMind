@@ -189,6 +189,7 @@ function LineCard({
     String(line.final_quantity ?? line.requested_quantity),
   );
   const [unit, setUnit] = useState(line.final_unit ?? line.requested_unit);
+  const [bonusQuantity, setBonusQuantity] = useState(String(line.final_bonus_quantity ?? line.bonus_quantity ?? 0));
   const [busy, setBusy] = useState(false);
   const editable = order.status === "pending_review";
   const act = async (action: () => Promise<unknown>) => {
@@ -207,9 +208,11 @@ function LineCard({
   };
   const finalQuantity = line.final_quantity ?? line.requested_quantity;
   const finalUnit = line.final_unit ?? line.requested_unit;
+  const finalBonusQuantity = line.final_bonus_quantity ?? line.bonus_quantity ?? 0;
   const changed =
     finalQuantity !== line.requested_quantity ||
-    finalUnit !== line.requested_unit;
+    finalUnit !== line.requested_unit ||
+    finalBonusQuantity !== (line.bonus_quantity ?? 0);
   return (
     <article className="line-card">
       <div className="line-top">
@@ -242,6 +245,7 @@ function LineCard({
           <strong>
             {line.requested_quantity} {line.requested_unit}
           </strong>
+          {!!line.bonus_quantity && <small> + {line.bonus_quantity} δώρο</small>}
         </div>
         <div>
           <span className="field-label">
@@ -250,6 +254,20 @@ function LineCard({
           <strong>
             {finalQuantity} {finalUnit}
           </strong>
+          {!!finalBonusQuantity && <small> + {finalBonusQuantity} δώρο</small>}
+        </div>
+        <div>
+          <span className="field-label">Εξαγωγή 4 στηλών</span>
+          {line.order_sheet_paid_quantity != null ? (
+            <>
+              <strong>{line.order_sheet_paid_quantity} {line.order_sheet_unit === "kg" ? "κιλά" : "τεμάχια"}</strong>
+              {!!line.order_sheet_bonus_quantity && (
+                <small> + {line.order_sheet_bonus_quantity} {line.order_sheet_unit === "kg" ? "κιλά" : "τεμάχια"} δώρο (χωριστή γραμμή Α)</small>
+              )}
+            </>
+          ) : (
+            <small>{line.order_sheet_conversion_error || "Η μετατροπή δεν είναι ακόμη διαθέσιμη"}</small>
+          )}
         </div>
         <div>
           <span className="field-label">Confidence</span>
@@ -316,7 +334,7 @@ function LineCard({
           onSubmit={(e) => {
             e.preventDefault();
             void act(() =>
-              updateFinalValues(order.id, line.id, Number(quantity), unit),
+              updateFinalValues(order.id, line.id, Number(quantity), unit, Number(bonusQuantity)),
             ).then((success) => {
               if (success) setEditing(false);
             });
@@ -342,6 +360,11 @@ function LineCard({
                 </option>
               ))}
             </select>
+          </label>
+          <label>
+            Ποσότητα δώρου
+            <input type="number" min="0" step="any" value={bonusQuantity}
+              onChange={(e) => setBonusQuantity(e.target.value)} required />
           </label>
           <button
             className="button primary"

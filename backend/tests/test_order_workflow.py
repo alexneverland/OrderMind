@@ -12,6 +12,7 @@ from backend.app.services.order_workflow_service import (
     OrderWorkflowService,
     OrderApprovalError,
 )
+from backend.app.services.matching_engine import MatchingEngine
 
 
 def setup_workflow_data(db_session: Session):
@@ -31,6 +32,47 @@ def setup_workflow_data(db_session: Session):
         "prod1": prod1,
         "prod2": prod2
     }
+
+
+def test_operator_unit_correction_is_recalled_for_all_company_customers(db_session):
+    data = setup_workflow_data(db_session)
+    product = data["prod1"]
+    product.unit = "kg"
+    db_session.commit()
+    first = MatchingEngine.match_line(
+        db_session, data["company"].id, data["customer"].id, 1,
+        product.sku + " 5", product.sku, 5, "piece",
+    )
+    assert first.final_unit == "piece"
+    order = OrderWorkflowService.create_order_from_match(
+        db_session, data["company"].id, data["customer"].id,
+        product.sku + " 5", [first],
+    )
+    OrderWorkflowService.update_line_final_values(
+        db_session, order.id, order.lines[0].id, final_unit="kg",
+    )
+    learned = MatchingEngine.match_line(
+        db_session, data["company"].id, data["customer"].id, 1,
+        product.sku + " 7", product.sku, 7, "piece",
+    )
+    assert learned.unit == "piece"
+    assert learned.final_unit == "kg"
+    assert learned.confidence.decision == MatchDecision.NEEDS_REVIEW
+    other_customer = Customer(
+        company_id=data["company"].id, customer_code="OTHER", customer_name="Other buyer",
+    )
+    db_session.add(other_customer)
+    db_session.commit()
+    for_other = MatchingEngine.match_line(
+        db_session, data["company"].id, other_customer.id, 1,
+        product.sku + " 7", product.sku, 7, "piece",
+    )
+    assert for_other.final_unit == "kg"
+    explicit_piece = MatchingEngine.match_line(
+        db_session, data["company"].id, other_customer.id, 1,
+        product.sku + " 7 τεμάχια", product.sku, 7, "piece", "τεμάχια", True,
+    )
+    assert explicit_piece.final_unit == "piece"
 
 
 def test_persist_matched_order_preserves_requested_and_final_values(db_session):
@@ -498,11 +540,11 @@ def test_update_line_final_values_excludes_product_mutation(db_session):
     )
     line_id = order.lines[0].id
 
-    # Quantity can be changed, but unsupported units cannot be assigned.
-    with pytest.raises(ValueError, match="Invalid packaging"):
-        OrderWorkflowService.update_line_final_values(
-            db=db_session, order_id=order.id, line_id=line_id, final_unit="kg"
-        )
+    # The operator can choose kilograms even when the catalog base unit is piece.
+    kg_value = OrderWorkflowService.update_line_final_values(
+        db=db_session, order_id=order.id, line_id=line_id, final_unit="kg"
+    )
+    assert kg_value.final_unit == "kg"
     updated = OrderWorkflowService.update_line_final_values(
         db=db_session,
         order_id=order.id,

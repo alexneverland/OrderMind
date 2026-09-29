@@ -66,3 +66,11 @@ it("creates a profile using the backend source field registry", async () => {
     ),
   );
 });
+
+it("creates the fixed four-column order sheet profile", async () => {
+  render(<ProfilesPage />);
+  fireEvent.click(await screen.findByRole("button", { name: /4-column order sheet/ }));
+  await waitFor(() => expect(mock.createProfile).toHaveBeenCalledWith(
+    expect.objectContaining({ company_id: 3, format: "order_sheet", include_header: false, mappings: [] }),
+  ));
+});
