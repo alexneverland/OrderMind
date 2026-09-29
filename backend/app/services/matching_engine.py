@@ -18,6 +18,7 @@ from backend.app.schemas.matching import (
 )
 from backend.app.services.confidence_scorer import ConfidenceScorer
 from backend.app.services.packaging_resolver import packaging_unit, resolve_product_packaging
+from backend.app.services.business_settings_service import effective_business_settings
 
 
 EVIDENCE_TYPE_PRIORITY: Dict[str, MatchPriority] = {
@@ -375,20 +376,26 @@ class MatchingEngine:
             ev.evidence_type in ("exact_packaging_code", "exact_packaging_barcode")
             for ev in best_cand_dto.evidence
         ) else None
-        # The catalog's base unit is product metadata. A customer order with
-        # no explicit unit requests a count of pieces.
+        business_settings = effective_business_settings(db, company_id)
         final_unit = unit
         preference_applied = False
         if not unit_explicit:
-            preference = db.execute(select(CompanyProductUnitPreference).where(
-                CompanyProductUnitPreference.company_id == company_id,
-                CompanyProductUnitPreference.product_id == best_prod.id,
-            )).scalar_one_or_none()
-            if preference and preference.unit != unit:
-                final_unit = preference.unit
-                preference_applied = True
+            behavior = business_settings.unitless_order_behavior
+            if behavior == "product_master_unit":
+                final_unit = normalize_unit(best_prod.unit)
+            elif behavior == "learned_product_preference":
+                preference = db.execute(select(CompanyProductUnitPreference).where(
+                    CompanyProductUnitPreference.company_id == company_id,
+                    CompanyProductUnitPreference.product_id == best_prod.id,
+                )).scalar_one_or_none()
+                if preference and preference.unit != unit:
+                    final_unit = preference.unit
+                    preference_applied = True
+                    best_conf.decision = MatchDecision.NEEDS_REVIEW
+                    best_conf.reasons.append(f"Previous operator unit correction suggests '{final_unit}'; verify this order")
+            elif behavior == "require_review":
                 best_conf.decision = MatchDecision.NEEDS_REVIEW
-                best_conf.reasons.append(f"Previous operator unit correction suggests '{final_unit}'; verify this order")
+                best_conf.reasons.append("Customer did not specify an order unit; verify it")
         matched_packaging_id = None
         if packaging_identifier:
             matching_package = [p for p in best_prod.packagings
@@ -397,7 +404,7 @@ class MatchingEngine:
                 final_unit = packaging_unit(matching_package[0].package_type)
                 if final_unit == "unknown":
                     final_unit = normalize_unit(matching_package[0].unit)
-        if unit_explicit or packaging_identifier or preference_applied:
+        if unit_explicit or packaging_identifier or preference_applied or final_unit != unit:
             compatible, matched_packaging_id, reason = resolve_product_packaging(
                 best_prod, final_unit, packaging_identifier
             )

@@ -5,6 +5,9 @@ from typing import List
 
 from backend.app.core.database import get_db
 from backend.app.models.company import Company
+from backend.app.models.business_settings import CompanyBusinessSettings
+from backend.app.schemas.business_settings import BusinessSettingsValues, BusinessSettingsResponse
+from backend.app.services.business_settings_service import effective_business_settings
 from backend.app.schemas.company import CompanyCreate, CompanyResponse
 
 router = APIRouter(prefix="/companies", tags=["Companies"])
@@ -40,3 +43,25 @@ def get_company(company_id: int, db: Session = Depends(get_db)):
             detail=f"Company with id {company_id} not found"
         )
     return company
+
+
+@router.get("/{company_id}/business-settings", response_model=BusinessSettingsResponse)
+def get_business_settings(company_id: int, db: Session = Depends(get_db)):
+    if not db.get(Company, company_id):
+        raise HTTPException(status_code=404, detail="Company not found")
+    return effective_business_settings(db, company_id)
+
+
+@router.put("/{company_id}/business-settings", response_model=BusinessSettingsResponse)
+def put_business_settings(company_id: int, payload: BusinessSettingsValues, db: Session = Depends(get_db)):
+    if not db.get(Company, company_id):
+        raise HTTPException(status_code=404, detail="Company not found")
+    row = db.get(CompanyBusinessSettings, company_id)
+    if row is None:
+        row = CompanyBusinessSettings(company_id=company_id)
+        db.add(row)
+    for key, value in payload.model_dump().items():
+        setattr(row, key, value)
+    db.commit()
+    db.refresh(row)
+    return row

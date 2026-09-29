@@ -15,6 +15,7 @@ from backend.app.core.text_normalizer import (
     normalize_text, is_quantity_grounded_in_span, is_unit_grounded_in_span,
 )
 from backend.app.models.order import Order, OrderLine
+from backend.app.models.export import ExportProfile
 from backend.app.models.memory import CustomerProductAlias
 from backend.app.schemas.order import OrderParseRequest, OrderParseResponse, NormalizedOrderLine
 from backend.app.schemas.matching import (
@@ -46,8 +47,11 @@ from backend.app.services.export_engine import (
     ExportEngine,
     OrderExportError,
     convert_order_sheet_quantities,
+    profile_policy_for_order,
+    business_policy_for_order,
 )
 from backend.app.services.order_file_service import extract_order_file, OrderFileError
+from backend.app.services.business_settings_service import effective_business_settings, validate_order_quantity_policy
 
 logger = logging.getLogger("ordermind.orders_api")
 router = APIRouter(prefix="/orders", tags=["Orders"])
@@ -221,6 +225,7 @@ async def match_order_endpoint(
         if len(lines_to_process) > settings.MAX_ORDER_LINES:
             raise HTTPException(status_code=413, detail="Order line limit exceeded")
         for item in lines_to_process:
+            validate_order_quantity_policy(effective_business_settings(db, payload.company_id), item.quantity_text, item.bonus_quantity)
             if normalize_text(item.original_text) not in normalize_text(raw_input):
                 raise ValueError(f"Line {item.line_number} is not present in raw order text")
             if not is_quantity_grounded_in_span(item.quantity, item.original_text, raw_input, item.product_phrase, item.quantity_text, item.bonus_quantity) or not is_unit_grounded_in_span(item.unit, item.raw_unit, item.unit_explicit, item.original_text, raw_input, item.product_phrase, item.quantity_text):
@@ -376,6 +381,7 @@ async def create_order_from_match_endpoint(
                 seen_line_numbers.add(item.line_number)
                 if normalize_text(item.original_text) not in normalize_text(raw_input):
                     raise ValueError(f"Line {item.line_number} is not present in raw order text")
+                validate_order_quantity_policy(effective_business_settings(db, payload.company_id), item.quantity_text, item.bonus_quantity)
                 if not is_quantity_grounded_in_span(
                     item.quantity, item.original_text, raw_input, item.product_phrase,
                     item.quantity_text, item.bonus_quantity,
@@ -475,6 +481,7 @@ async def create_order_from_match_endpoint(
 @router.get("/{order_id}", response_model=OrderResponse, status_code=status.HTTP_200_OK)
 def get_order_endpoint(
     order_id: int,
+    profile_id: Optional[int] = Query(None),
     db: Session = Depends(get_db)
 ):
     """Retrieves an order and its line items with current lifecycle and review statuses."""
@@ -485,6 +492,13 @@ def get_order_endpoint(
             detail=f"Order with id {order_id} not found"
         )
     response = OrderResponse.model_validate(order)
+    if profile_id is None:
+        return response
+    profile = db.get(ExportProfile, profile_id)
+    if not profile or profile.company_id != order.company_id or profile.format != "order_sheet":
+        raise HTTPException(status_code=404, detail="Order sheet profile not found for this company")
+    profile_policy = profile_policy_for_order(order, profile)
+    business_policy = business_policy_for_order(db, order)
     snapshot_lines = {}
     if order.status in ("approved", "exported") and isinstance(order.approved_snapshot, dict):
         snapshot_lines = {
@@ -509,10 +523,18 @@ def get_order_endpoint(
             unit = line.final_unit or line.requested_unit
             ratio = line.matched_packaging.pieces_per_case if line.matched_packaging else None
         try:
-            paid, gift, output_unit = convert_order_sheet_quantities(quantity, bonus, unit, ratio)
+            paid, gift, output_unit = convert_order_sheet_quantities(
+                quantity, bonus, unit, ratio,
+                profile_policy["quantity_output_unit"],
+                profile_policy["convert_case_using_pieces_per_case"],
+                business_policy["allow_packaging_conversion"],
+            )
+            if gift and not profile_policy["bonus_separate_row"]:
+                raise OrderExportError("Profile does not define how to export bonus goods")
             dto.order_sheet_paid_quantity = paid
             dto.order_sheet_bonus_quantity = gift
             dto.order_sheet_unit = output_unit
+            dto.order_sheet_bonus_marker = profile_policy["bonus_marker"] if gift else None
         except (OrderExportError, TypeError, ValueError) as exc:
             dto.order_sheet_conversion_error = str(exc)
     return response

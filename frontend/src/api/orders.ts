@@ -35,7 +35,8 @@ export const getOrderStats = (companyId?: number) => {
   if (companyId) query.set("company_id", String(companyId));
   return request<OrderStats>(`/orders/summary?${query}`);
 };
-export const getOrder = (id: number) => request<Order>(`/orders/${id}`);
+export const getOrder = (id: number, profileId?: number) =>
+  request<Order>(`/orders/${id}${profileId ? `?profile_id=${profileId}` : ""}`);
 export type OrderFilePreview = {
   filename: string;
   text: string;

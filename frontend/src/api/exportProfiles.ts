@@ -15,6 +15,10 @@ export type ProfileInput = {
   encoding: string;
   include_header: boolean;
   mappings: Mapping[];
+  bonus_separate_row?: boolean;
+  bonus_marker?: string | null;
+  quantity_output_unit?: "source" | "piece";
+  convert_case_using_pieces_per_case?: boolean;
 };
 export const createProfile = (input: ProfileInput) =>
   request<ExportProfile>("/export-profiles", {

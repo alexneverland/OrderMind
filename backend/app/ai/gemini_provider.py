@@ -36,7 +36,7 @@ ABSOLUTE BOUNDARIES AND CONSTRAINTS:
 4. Filter noise: Ignore greetings, pleasantries, delivery instructions, or sign-offs (e.g. 'Καλημέρα', 'παρακαλώ', 'ευχαριστώ', 'στείλτε τα αύριο').
 5. Units: Extract the verbatim unit as written by customer if mentioned (e.g. 'κούτες', 'κιλά', 'τεμάχια', 'trays', 'κιβώτια'). If NO unit is mentioned, return null for unit. Never invent or assume a unit.
 6. Grounding: The original_text must be the exact verbatim snippet from the customer input.
-7. Read each layout semantically: columns may vary, unrelated columns or headings may intervene, and one physical row can contain multiple products. Return one item per requested product. Include an exact quantity_text substring for each item. Preserve a paid quantity and a separate bonus_quantity when the customer requests free units (for example 10+1, 10 cases plus 1 free case, or their Greek equivalents). Never add the free quantity to the paid quantity. A bare bonus number inherits the explicit unit of the paid quantity, regardless of where the unit appears (for example 10 cases + 1, cases 10+1, or 10+1 cases). If the two quantities explicitly use different units, preserve both unit tokens in quantity_text; never pretend they have the same unit.
+7. Read each layout semantically: columns may vary, unrelated columns or headings may intervene, and one physical row can contain multiple products. Return one item per requested product. Include an exact quantity_text substring for each item. Preserve an explicitly requested free quantity separately. A bare free number shares the explicit unit of its paid quantity. Never infer bonus meaning from a plus sign unless the supplied company policy enables it. If two quantities explicitly use different units, preserve both unit tokens in quantity_text.
 8. A product description or an M.M column can mention kilos or other units; that is product metadata. Set the order unit only from the quantity expression. A bare quantity means pieces. If the quantity explicitly says kilos or cases, return that unit exactly.
 """
 
@@ -71,7 +71,11 @@ class GeminiProvider(BaseAIProvider):
         client = self._get_client()
         from google.genai import types
 
-        user_content = f"Extract items from this customer order:\n\"\"\"\n{normalized_input.raw_text}\n\"\"\""
+        bonus_mode = (context or {}).get("bonus_expression_mode", "disabled")
+        policy = ("For this company, a paid+free expression such as 10+1 means 10 paid and 1 free."
+                  if bonus_mode == "paid_plus_bonus" else
+                  "For this company, a plus sign alone is not evidence of free goods; preserve the phrase without guessing.")
+        user_content = f"{policy}\nExtract items from this customer order:\n\"\"\"\n{normalized_input.raw_text}\n\"\"\""
 
         max_retries = 3
         last_error = None

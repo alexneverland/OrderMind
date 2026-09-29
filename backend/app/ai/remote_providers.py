@@ -70,8 +70,9 @@ class OpenAIProvider(BaseAIProvider):
 
     async def extract_order(self, normalized_input: NormalizedInput, context: Optional[Dict[str, Any]] = None) -> List[NormalizedOrderLineDraft]:
         try:
+            bonus_policy = "Interpret paid+free syntax such as 10+1 as separate paid and bonus quantities." if (context or {}).get("bonus_expression_mode") == "paid_plus_bonus" else "A plus sign alone does not prove free goods; do not guess bonus quantities."
             return _drafts(await self._complete(
-                "Return only JSON with an items array. Each item has original_text (exact substring), product_phrase, positive paid quantity, verbatim quantity_text, bonus_quantity (zero if none), and verbatim unit or null. Customer order:\n" + normalized_input.raw_text
+                bonus_policy + " Return only JSON with an items array. Each item has original_text (exact substring), product_phrase, positive paid quantity, verbatim quantity_text, bonus_quantity (zero if none), and verbatim unit or null. Customer order:\n" + normalized_input.raw_text
             ))
         except Exception as exc:
             raise RuntimeError("OpenAI extraction provider is unavailable") from exc
@@ -111,8 +112,9 @@ class AnthropicProvider(BaseAIProvider):
 
     async def extract_order(self, normalized_input: NormalizedInput, context: Optional[Dict[str, Any]] = None) -> List[NormalizedOrderLineDraft]:
         try:
+            bonus_policy = "Interpret paid+free syntax such as 10+1 as separate paid and bonus quantities." if (context or {}).get("bonus_expression_mode") == "paid_plus_bonus" else "A plus sign alone does not prove free goods; do not guess bonus quantities."
             return _drafts(await self._complete(
-                "Return only JSON with an items array. Each item has original_text (exact substring), product_phrase, positive paid quantity, verbatim quantity_text, bonus_quantity (zero if none), and verbatim unit or null. Customer order:\n" + normalized_input.raw_text
+                bonus_policy + " Return only JSON with an items array. Each item has original_text (exact substring), product_phrase, positive paid quantity, verbatim quantity_text, bonus_quantity (zero if none), and verbatim unit or null. Customer order:\n" + normalized_input.raw_text
             ))
         except Exception as exc:
             raise RuntimeError("Anthropic extraction provider is unavailable") from exc

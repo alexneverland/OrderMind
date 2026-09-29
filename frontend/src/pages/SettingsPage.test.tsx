@@ -6,14 +6,28 @@ import { SettingsPage } from "./SettingsPage";
 const mock = vi.hoisted(() => ({
   getAISettings: vi.fn(),
   saveAISettings: vi.fn(),
+  getBusinessSettings: vi.fn(),
+  saveBusinessSettings: vi.fn(),
+  companyId: 1,
 }));
 vi.mock("../api/runtimeSettings", () => mock);
+vi.mock("../api/businessSettings", () => mock);
 vi.mock("../components/AppShell", () => ({
-  useCompany: () => ({ companies: [] }),
+  useCompany: () => ({ companyId: mock.companyId, companies: [
+    { id: 1, name: "Company A" }, { id: 2, name: "Company B" },
+  ] }),
 }));
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mock.companyId = 1;
+  mock.getBusinessSettings.mockImplementation(async (id: number) => ({
+    company_id: id, bonus_enabled: id === 1,
+    bonus_expression_mode: id === 1 ? "paid_plus_bonus" : "disabled",
+    unitless_order_behavior: "require_review",
+    allow_packaging_conversion: false, learn_unit_preferences: false,
+  }));
+  mock.saveBusinessSettings.mockImplementation(async (value) => value);
   mock.getAISettings.mockResolvedValue({
     provider: "mock",
     model: "mock-model",
@@ -32,6 +46,24 @@ beforeEach(() => {
     google_cloud_project: null,
     google_cloud_location: "us-central1",
   });
+});
+
+it("loads neutral rules for another selected company and saves only that company", async () => {
+  const view = render(<MemoryRouter><SettingsPage /></MemoryRouter>);
+  expect(await screen.findByText("Company A")).toBeInTheDocument();
+  expect(await screen.findByRole("option", { name: "10+1 means paid + bonus" })).toBeInTheDocument();
+  expect(screen.getByLabelText("Enable paid and bonus quantities")).toBeChecked();
+
+  mock.companyId = 2;
+  view.rerender(<MemoryRouter><SettingsPage /></MemoryRouter>);
+  expect(await screen.findByText("Company B")).toBeInTheDocument();
+  await waitFor(() => expect(mock.getBusinessSettings).toHaveBeenCalledWith(2));
+  await waitFor(() => expect(screen.getByLabelText("Enable paid and bonus quantities")).not.toBeChecked());
+  expect(screen.getByRole("combobox", { name: "When customer does not specify a unit" })).toHaveValue("require_review");
+  fireEvent.click(screen.getByRole("button", { name: "Save company rules" }));
+  await waitFor(() => expect(mock.saveBusinessSettings).toHaveBeenCalledWith(
+    expect.objectContaining({ company_id: 2, bonus_enabled: false }),
+  ));
 });
 
 it("offers OpenAI, Claude and Vertex with provider-specific credentials", async () => {

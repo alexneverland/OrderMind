@@ -3,6 +3,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.app.models.company import Company
+from backend.app.models.business_settings import CompanyBusinessSettings
 from backend.app.models.customer import Customer
 from backend.app.models.product import Product
 from backend.app.models.memory import CustomerProductAlias, HumanCorrection
@@ -36,6 +37,8 @@ def setup_workflow_data(db_session: Session):
 
 def test_operator_unit_correction_is_recalled_for_all_company_customers(db_session):
     data = setup_workflow_data(db_session)
+    db_session.add(CompanyBusinessSettings(company_id=data["company"].id, unitless_order_behavior="learned_product_preference", learn_unit_preferences=True))
+    db_session.commit()
     product = data["prod1"]
     product.unit = "kg"
     db_session.commit()

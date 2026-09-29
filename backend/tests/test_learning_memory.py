@@ -3,6 +3,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.app.models.company import Company
+from backend.app.models.business_settings import CompanyBusinessSettings
 from backend.app.models.customer import Customer
 from backend.app.models.product import Product
 from backend.app.models.order import Order, OrderLine
@@ -17,6 +18,7 @@ def setup_memory_catalog(db_session: Session):
     company = Company(name="Hellas Wholesale SA")
     db_session.add(company)
     db_session.flush()
+    db_session.add(CompanyBusinessSettings(company_id=company.id, unitless_order_behavior="piece"))
 
     customer = Customer(company_id=company.id, customer_code="CUST-OUZERI", customer_name="Taverna Ouzeri")
     db_session.add(customer)
@@ -569,5 +571,4 @@ def test_order_and_line_consistency_validations(db_session):
     assert correction.order_line_id == line_1.id
     assert correction.order_id == order_1.id
     assert len(db_session.execute(select(HumanCorrection)).scalars().all()) == initial_corrections_count + 1
-
 

@@ -83,6 +83,7 @@ class OrderLineResponse(BaseModel):
     order_sheet_paid_quantity: Optional[float] = None
     order_sheet_bonus_quantity: Optional[float] = None
     order_sheet_unit: Optional[str] = None
+    order_sheet_bonus_marker: Optional[str] = None
     order_sheet_conversion_error: Optional[str] = None
     confidence_score: float = 0.0
     confidence_reasons: List[str] = Field(default_factory=list)

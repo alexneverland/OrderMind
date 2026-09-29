@@ -1,4 +1,5 @@
 from backend.app.models.company import Company
+from backend.app.models.business_settings import CompanyBusinessSettings
 from backend.app.models.customer import Customer, CustomerContact
 from backend.app.models.product import Product, ProductAlias, Packaging
 from backend.app.models.memory import CustomerProductAlias, CompanyProductUnitPreference, HumanCorrection
@@ -8,6 +9,7 @@ from backend.app.models import tenant_integrity  # noqa: F401
 
 __all__ = [
     "Company",
+    "CompanyBusinessSettings",
     "Customer",
     "CustomerContact",
     "Product",

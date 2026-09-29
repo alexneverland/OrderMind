@@ -45,6 +45,10 @@ class ExportProfileCreate(BaseModel):
     include_header: bool = Field(default=True, description="Whether to write header row in Excel/CSV")
     encoding: str = Field(default="utf-8-sig", description="Encoding for CSV: utf-8, utf-8-sig")
     mappings: List[ExportFieldMappingCreate] = Field(default_factory=list, description="List of column mappings; empty for the fixed four-column order sheet")
+    bonus_separate_row: bool = False
+    bonus_marker: Optional[str] = Field(default=None, max_length=20)
+    quantity_output_unit: str = "source"
+    convert_case_using_pieces_per_case: bool = False
 
 
 class ExportProfileUpdate(BaseModel):
@@ -54,6 +58,10 @@ class ExportProfileUpdate(BaseModel):
     include_header: Optional[bool] = None
     encoding: Optional[str] = None
     mappings: Optional[List[ExportFieldMappingCreate]] = None
+    bonus_separate_row: Optional[bool] = None
+    bonus_marker: Optional[str] = Field(default=None, max_length=20)
+    quantity_output_unit: Optional[str] = None
+    convert_case_using_pieces_per_case: Optional[bool] = None
 
 
 class ExportProfileResponse(BaseModel):
@@ -66,5 +74,9 @@ class ExportProfileResponse(BaseModel):
     delimiter: str
     include_header: bool
     encoding: str
+    bonus_separate_row: bool
+    bonus_marker: Optional[str]
+    quantity_output_unit: str
+    convert_case_using_pieces_per_case: bool
     created_at: datetime
     field_mappings: List[ExportFieldMappingResponse] = Field(default_factory=list)

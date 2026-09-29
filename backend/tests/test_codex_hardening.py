@@ -12,6 +12,7 @@ from sqlalchemy.orm.exc import StaleDataError
 from backend.app.config import settings
 from backend.app.core.text_normalizer import is_quantity_grounded_in_span, is_unit_grounded_in_span
 from backend.app.models.company import Company
+from backend.app.models.business_settings import CompanyBusinessSettings
 from backend.app.models.customer import Customer
 from backend.app.models.product import Product, Packaging, ProductAlias
 from backend.app.models.order import Order, OrderLine, MatchCandidate
@@ -34,6 +35,7 @@ def setup_hardening_data(db_session: Session):
     company = Company(name="Hellas Food Services")
     db_session.add(company)
     db_session.flush()
+    db_session.add(CompanyBusinessSettings(company_id=company.id, unitless_order_behavior="piece"))
 
     customer = Customer(
         company_id=company.id,

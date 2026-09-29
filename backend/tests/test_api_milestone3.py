@@ -2,6 +2,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend.app.models.company import Company
+from backend.app.models.business_settings import CompanyBusinessSettings
 from backend.app.models.customer import Customer
 from backend.app.models.product import Product
 from backend.app.models.order import Order, OrderLine
@@ -12,6 +13,7 @@ def setup_milestone3_api_data(db_session):
     company = Company(name="Olympus Meats")
     db_session.add(company)
     db_session.flush()
+    db_session.add(CompanyBusinessSettings(company_id=company.id, unitless_order_behavior="piece"))
 
     customer = Customer(company_id=company.id, customer_code="CUST-DELI", customer_name="Greek Deli Tavern")
     db_session.add(customer)

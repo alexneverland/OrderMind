@@ -146,6 +146,9 @@ describe("operator review", () => {
     expect(screen.getByText("Customer alias match")).toBeInTheDocument();
   });
   it("shows paid and free quantities that the four-column export will receive", async () => {
+    mock.getProfiles.mockResolvedValue([
+      { id: 20, name: "Legacy sheet", format: "order_sheet", bonus_marker: "Α" },
+    ]);
     current.lines[0].requested_quantity = 10;
     current.lines[0].requested_unit = "case";
     current.lines[0].bonus_quantity = 1;
@@ -154,9 +157,11 @@ describe("operator review", () => {
     current.lines[0].order_sheet_paid_quantity = 100;
     current.lines[0].order_sheet_bonus_quantity = 10;
     current.lines[0].order_sheet_unit = "piece";
+    current.lines[0].order_sheet_bonus_marker = "Α";
     show();
     expect(await screen.findByText("100 τεμάχια")).toBeInTheDocument();
     expect(screen.getByText("+ 10 τεμάχια δώρο (χωριστή γραμμή Α)")).toBeInTheDocument();
+    expect(mock.getOrder).toHaveBeenCalledWith(1, 20);
   });
   it("confirms a line and refreshes its status", async () => {
     show();

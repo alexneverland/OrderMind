@@ -6,10 +6,40 @@ import {
   type AISettings,
 } from "../api/runtimeSettings";
 import { useCompany } from "../components/AppShell";
+import { getBusinessSettings, saveBusinessSettings, type BusinessSettings } from "../api/businessSettings";
 import { Alert, Spinner } from "../components/ui";
 
 export function SettingsPage() {
-  const { companies } = useCompany();
+  const { companies, companyId } = useCompany();
+  const [business, setBusiness] = useState<BusinessSettings | null>(null);
+  const [businessError, setBusinessError] = useState("");
+  const [businessBusy, setBusinessBusy] = useState(false);
+  const [businessSaved, setBusinessSaved] = useState(false);
+  useEffect(() => {
+    let active = true;
+    setBusiness(null);
+    setBusinessError("");
+    setBusinessSaved(false);
+    if (companyId) getBusinessSettings(companyId)
+      .then((value) => { if (active) setBusiness(value); })
+      .catch((e) => { if (active) setBusinessError((e as Error).message); });
+    return () => { active = false; };
+  }, [companyId]);
+  const saveBusiness = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!business || !companyId || business.company_id !== companyId) return;
+    setBusinessBusy(true);
+    setBusinessError("");
+    setBusinessSaved(false);
+    try {
+      setBusiness(await saveBusinessSettings(business));
+      setBusinessSaved(true);
+    } catch (e) {
+      setBusinessError((e as Error).message);
+    } finally {
+      setBusinessBusy(false);
+    }
+  };
   const [current, setCurrent] = useState<AISettings | null>(null);
   const [provider, setProvider] = useState<AISettings["provider"]>("mock");
   const [model, setModel] = useState("mock-model");
@@ -162,6 +192,44 @@ export function SettingsPage() {
               )}
             </form>
           )
+        )}
+      </section>
+      <section className="panel padded settings-panel">
+        <h2>Company business rules</h2>
+        <p>These rules apply only to: <strong>{companies.find((c) => c.id === companyId)?.name || "Select a company"}</strong>.</p>
+        <Alert message={businessError} />
+        {companyId && !business && !businessError && <Spinner />}
+        {business && business.company_id === companyId && (
+          <form className="stack-form" onSubmit={(e) => void saveBusiness(e)}>
+            <label className="check-row"><input type="checkbox" checked={business.bonus_enabled}
+              onChange={(e) => setBusiness({ ...business, bonus_enabled: e.target.checked,
+                bonus_expression_mode: e.target.checked ? "explicit_only" : "disabled" })} /> Enable paid and bonus quantities</label>
+            <label>Promotion syntax
+              <select value={business.bonus_expression_mode} disabled={!business.bonus_enabled}
+                onChange={(e) => setBusiness({ ...business, bonus_expression_mode: e.target.value as BusinessSettings["bonus_expression_mode"] })}>
+                <option value="disabled">Disabled</option>
+                <option value="explicit_only">Only explicitly free goods</option>
+                <option value="paid_plus_bonus">10+1 means paid + bonus</option>
+              </select>
+            </label>
+            <label>When customer does not specify a unit
+              <select value={business.unitless_order_behavior}
+                onChange={(e) => setBusiness({ ...business, unitless_order_behavior: e.target.value as BusinessSettings["unitless_order_behavior"],
+                  learn_unit_preferences: e.target.value === "learned_product_preference" ? true : business.learn_unit_preferences })}>
+                <option value="require_review">Require review</option>
+                <option value="piece">Piece</option>
+                <option value="product_master_unit">Product master unit</option>
+                <option value="learned_product_preference">Learned product preference</option>
+              </select>
+            </label>
+            <label className="check-row"><input type="checkbox" checked={business.learn_unit_preferences}
+              disabled={business.unitless_order_behavior === "learned_product_preference"}
+              onChange={(e) => setBusiness({ ...business, learn_unit_preferences: e.target.checked })} /> Learn unit preferences from operator corrections</label>
+            <label className="check-row"><input type="checkbox" checked={business.allow_packaging_conversion}
+              onChange={(e) => setBusiness({ ...business, allow_packaging_conversion: e.target.checked })} /> Allow case to piece conversion using packaging ratios</label>
+            <button className="button primary" disabled={businessBusy}>{businessBusy ? <Spinner /> : "Save company rules"}</button>
+            {businessSaved && <p role="status">Company rules saved.</p>}
+          </form>
         )}
       </section>
       <section className="panel padded setup-panel">
