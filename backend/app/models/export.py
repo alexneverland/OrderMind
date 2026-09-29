@@ -14,6 +14,10 @@ class ExportProfile(Base):
     delimiter = Column(String(10), default=",")
     include_header = Column(Boolean, default=True, nullable=False)
     encoding = Column(String(20), default="utf-8-sig", nullable=False)
+    bonus_separate_row = Column(Boolean, nullable=False, default=False, server_default="0")
+    bonus_marker = Column(String(20), nullable=True)
+    quantity_output_unit = Column(String(20), nullable=False, default="source", server_default="source")
+    convert_case_using_pieces_per_case = Column(Boolean, nullable=False, default=False, server_default="0")
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     # Relationships

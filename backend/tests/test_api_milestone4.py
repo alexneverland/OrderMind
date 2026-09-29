@@ -5,6 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend.app.models.company import Company
+from backend.app.models.business_settings import CompanyBusinessSettings
 from backend.app.models.customer import Customer
 from backend.app.models.product import Product
 from backend.app.models.memory import CustomerProductAlias
@@ -14,6 +15,7 @@ def setup_milestone4_api_data(db_session):
     company = Company(name="Olympus Provisions SA")
     db_session.add(company)
     db_session.flush()
+    db_session.add(CompanyBusinessSettings(company_id=company.id, unitless_order_behavior="piece"))
 
     customer = Customer(
         company_id=company.id,
@@ -273,7 +275,7 @@ def test_api_export_profile_crud_and_patch_line_values(client: TestClient, db_se
     assert patched_line["final_quantity"] == 25.0
     assert patched_line["final_unit"] == "piece"
     assert patched_line["requested_quantity"] == 10.0
-    assert patched_line["requested_unit"] == "piece"
+    assert patched_line["requested_unit"] == "unknown"
 
     # Attempting to mutate product via PATCH has no effect on product
     orig_product_id = patched_line["matched_product_id"]

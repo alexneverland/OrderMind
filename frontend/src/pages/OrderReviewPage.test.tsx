@@ -145,7 +145,23 @@ describe("operator review", () => {
     fireEvent.click(screen.getByText("Why this match?"));
     expect(screen.getByText("Customer alias match")).toBeInTheDocument();
   });
+  it("shows missing customer unit separately from the operator final unit", async () => {
+    current.lines[0].requested_unit = "unknown";
+    current.lines[0].unit_explicit = false;
+    current.lines[0].final_unit = null;
+    show();
+    expect(await screen.findByText("10 · unit not specified")).toBeInTheDocument();
+    expect(screen.getByText("10 · unit not set")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Edit final values" }));
+    expect(screen.getByRole("combobox", { name: "Final unit" })).toHaveValue("unknown");
+    expect(screen.getByRole("button", { name: "Save values" })).toBeDisabled();
+    fireEvent.change(screen.getByRole("combobox", { name: "Final unit" }), { target: { value: "piece" } });
+    expect(screen.getByRole("button", { name: "Save values" })).toBeEnabled();
+  });
   it("shows paid and free quantities that the four-column export will receive", async () => {
+    mock.getProfiles.mockResolvedValue([
+      { id: 20, name: "Legacy sheet", format: "order_sheet", bonus_marker: "Α" },
+    ]);
     current.lines[0].requested_quantity = 10;
     current.lines[0].requested_unit = "case";
     current.lines[0].bonus_quantity = 1;
@@ -154,9 +170,11 @@ describe("operator review", () => {
     current.lines[0].order_sheet_paid_quantity = 100;
     current.lines[0].order_sheet_bonus_quantity = 10;
     current.lines[0].order_sheet_unit = "piece";
+    current.lines[0].order_sheet_bonus_marker = "Α";
     show();
     expect(await screen.findByText("100 τεμάχια")).toBeInTheDocument();
     expect(screen.getByText("+ 10 τεμάχια δώρο (χωριστή γραμμή Α)")).toBeInTheDocument();
+    expect(mock.getOrder).toHaveBeenCalledWith(1, 20);
   });
   it("confirms a line and refreshes its status", async () => {
     show();

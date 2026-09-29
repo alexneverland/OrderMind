@@ -3,6 +3,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.app.models.company import Company
+from backend.app.models.business_settings import CompanyBusinessSettings
 from backend.app.models.customer import Customer
 from backend.app.models.product import Product
 from backend.app.models.memory import CustomerProductAlias, HumanCorrection
@@ -19,6 +20,7 @@ def setup_workflow_data(db_session: Session):
     company = Company(name="Hellas Catering")
     db_session.add(company)
     db_session.flush()
+    db_session.add(CompanyBusinessSettings(company_id=company.id, unitless_order_behavior="piece"))
 
     customer = Customer(company_id=company.id, customer_code="CUST-ALPHA", customer_name="Alpha Restaurant")
     prod1 = Product(company_id=company.id, sku="SKU-7843", description="Γαλοπούλα Καπνιστή 1kg", unit="piece", active=True)
@@ -36,6 +38,10 @@ def setup_workflow_data(db_session: Session):
 
 def test_operator_unit_correction_is_recalled_for_all_company_customers(db_session):
     data = setup_workflow_data(db_session)
+    rules = db_session.get(CompanyBusinessSettings, data["company"].id)
+    rules.unitless_order_behavior = "learned_product_preference"
+    rules.learn_unit_preferences = True
+    db_session.commit()
     product = data["prod1"]
     product.unit = "kg"
     db_session.commit()
@@ -43,7 +49,7 @@ def test_operator_unit_correction_is_recalled_for_all_company_customers(db_sessi
         db_session, data["company"].id, data["customer"].id, 1,
         product.sku + " 5", product.sku, 5, "piece",
     )
-    assert first.final_unit == "piece"
+    assert first.final_unit is None
     order = OrderWorkflowService.create_order_from_match(
         db_session, data["company"].id, data["customer"].id,
         product.sku + " 5", [first],
@@ -55,7 +61,7 @@ def test_operator_unit_correction_is_recalled_for_all_company_customers(db_sessi
         db_session, data["company"].id, data["customer"].id, 1,
         product.sku + " 7", product.sku, 7, "piece",
     )
-    assert learned.unit == "piece"
+    assert learned.unit == "unknown"
     assert learned.final_unit == "kg"
     assert learned.confidence.decision == MatchDecision.NEEDS_REVIEW
     other_customer = Customer(
@@ -122,7 +128,7 @@ def test_persist_matched_order_preserves_requested_and_final_values(db_session):
     assert line.original_text == "10 κοκκινα"
     assert line.product_phrase == "κοκκινα"
     assert line.requested_quantity == 10.0
-    assert line.requested_unit == "piece"
+    assert line.requested_unit == "unknown"
     assert line.unit_explicit is False
 
     # Matched/final fields

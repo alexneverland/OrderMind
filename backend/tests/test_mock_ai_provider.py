@@ -48,12 +48,12 @@ async def test_mock_ai_provider_single_line_variations():
     assert items4[0].unit_explicit is True
     assert items4[0].product_phrase == "σαλάμι"
 
-    # 5. "10 κοκκινα" (unspecified unit: defaults to piece, unit_explicit=False, raw_unit=None)
+    # 5. "10 κοκκινα" (unspecified unit remains unknown)
     inp5 = NormalizedInput(raw_text="10 κοκκινα", normalized_text="")
     items5 = await provider.extract_order(inp5)
     assert len(items5) == 1
     assert items5[0].quantity == 10.0
-    assert items5[0].unit == "piece"
+    assert items5[0].unit == "unknown"
     assert items5[0].raw_unit is None
     assert items5[0].unit_explicit is False
     assert items5[0].product_phrase == "κοκκινα"
@@ -103,7 +103,7 @@ async def test_mock_ai_provider_connector_and_multiline():
     assert items2[0].product_phrase == "ζαμπόν"
 
     assert items2[1].quantity == 5.0
-    assert items2[1].unit == "piece"
+    assert items2[1].unit == "unknown"
     assert items2[1].raw_unit is None
     assert items2[1].unit_explicit is False
     assert items2[1].product_phrase == "μπέικον"

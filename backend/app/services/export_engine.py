@@ -17,6 +17,7 @@ from backend.app.services.export_registry import (
     extract_source_field_value,
     sanitize_formula_injection,
 )
+from backend.app.services.business_settings_service import effective_business_settings
 
 
 class OrderExportError(ValueError):
@@ -26,26 +27,36 @@ class OrderExportError(ValueError):
 
 def convert_order_sheet_quantities(
     quantity: float, bonus_quantity: float, unit: str, pieces_per_case: float | None,
+    output_unit: str, convert_case: bool, allow_packaging_conversion: bool,
 ) -> Tuple[float, float, str]:
-    """Compute the two output quantities used by the four-column order sheet."""
+    """Convert quantities only under validated company and export profile policy."""
     factor = 1.0
     if unit == "case":
-        factor = pieces_per_case
-        if factor is None or not math.isfinite(factor) or factor <= 0:
-            raise OrderExportError("A valid case packaging ratio is required")
+        if output_unit == "piece":
+            if not (convert_case and allow_packaging_conversion):
+                raise OrderExportError("Case conversion is not enabled for this company and profile")
+            factor = pieces_per_case
+            if factor is None or not math.isfinite(factor) or factor <= 0:
+                raise OrderExportError("A valid case packaging ratio is required")
+        elif output_unit != "source":
+            raise OrderExportError("Unsupported case output unit")
     elif unit not in {"piece", "kg"}:
         raise OrderExportError(f"Unsupported order sheet unit '{unit}'")
+    elif output_unit == "piece" and unit == "kg":
+        raise OrderExportError("Kilograms cannot be converted to pieces without a proven product ratio")
     paid = quantity * factor
     gift = bonus_quantity * factor
     if not math.isfinite(paid) or paid <= 0 or not math.isfinite(gift) or gift < 0:
         raise OrderExportError("Invalid converted quantities")
-    return paid, gift, "kg" if unit == "kg" else "piece"
+    return paid, gift, unit if output_unit == "source" else "piece"
 
 
-def _order_sheet_rows(order: Order, sorted_lines: List[Any]) -> List[List[Any]]:
+def _order_sheet_rows(db: Session, order: Order, sorted_lines: List[Any], profile: ExportProfile) -> List[List[Any]]:
     """Render approved business values as SKU, description, gift marker, quantity."""
     snapshots = order.approved_snapshot.get("lines", []) if isinstance(order.approved_snapshot, dict) else []
     rows = []
+    profile_policy = profile_policy_for_order(order, profile)
+    business_policy = business_policy_for_order(db, order)
     for index, line in enumerate(sorted_lines):
         item = snapshots[index] if snapshots else {
             "sku": line.final_sku or (line.matched_product.sku if line.matched_product else ""),
@@ -59,6 +70,9 @@ def _order_sheet_rows(order: Order, sorted_lines: List[Any]) -> List[List[Any]]:
             paid, gift, _ = convert_order_sheet_quantities(
                 item["quantity"], item.get("bonus_quantity") or 0,
                 item["unit"], item.get("pieces_per_case"),
+                profile_policy["quantity_output_unit"],
+                profile_policy["convert_case_using_pieces_per_case"],
+                business_policy["allow_packaging_conversion"],
             )
         except OrderExportError as exc:
             raise OrderExportError(f"Line {line.line_number}: {exc}") from exc
@@ -66,8 +80,37 @@ def _order_sheet_rows(order: Order, sorted_lines: List[Any]) -> List[List[Any]]:
         description = sanitize_formula_injection(item["description"])
         rows.append([sku, description, "", paid])
         if gift:
-            rows.append([sku, description, "Α", gift])
+            if not profile_policy["bonus_separate_row"]:
+                raise OrderExportError(f"Line {line.line_number}: profile does not define how to export bonus goods")
+            rows.append([sku, description, profile_policy["bonus_marker"], gift])
     return rows
+
+
+def profile_policy_for_order(order: Order, profile: ExportProfile) -> dict:
+    snapshot = order.approved_snapshot if isinstance(order.approved_snapshot, dict) else {}
+    frozen = snapshot.get("export_profiles", {}).get(str(profile.id))
+    if frozen:
+        return frozen
+    # Before this migration, order_sheet had one fixed policy. Older approved
+    # orders retain that policy even if the live profile is later edited.
+    if (order.status in {"approved", "exported"} and "export_profiles" not in snapshot
+            and profile.format == "order_sheet" and profile.created_at and order.approved_at
+            and profile.created_at <= order.approved_at):
+        return {"bonus_separate_row": True, "bonus_marker": "Α", "quantity_output_unit": "piece",
+                "convert_case_using_pieces_per_case": True, "include_header": False}
+    return {"bonus_separate_row": profile.bonus_separate_row, "bonus_marker": profile.bonus_marker,
+            "quantity_output_unit": profile.quantity_output_unit,
+            "convert_case_using_pieces_per_case": profile.convert_case_using_pieces_per_case,
+            "include_header": profile.include_header}
+
+
+def business_policy_for_order(db: Session, order: Order) -> dict:
+    snapshot = order.approved_snapshot if isinstance(order.approved_snapshot, dict) else {}
+    if "business_settings" in snapshot:
+        return snapshot["business_settings"]
+    if order.status in {"approved", "exported"}:
+        return {"allow_packaging_conversion": True}
+    return effective_business_settings(db, order.company_id).model_dump()
 
 
 class ExportEngine:
@@ -142,7 +185,7 @@ class ExportEngine:
                 raise OrderExportError("Approved order lines differ from export snapshot")
 
         if fmt == "order_sheet":
-            data_rows = _order_sheet_rows(order, sorted_lines)
+            data_rows = _order_sheet_rows(db, order, sorted_lines, profile)
         else:
             for line in sorted_lines:
                 row: List[Any] = []
@@ -162,8 +205,8 @@ class ExportEngine:
             ws = wb.active
             ws.title = "Order"
 
-            if profile.include_header and fmt != "order_sheet":
-                ws.append(headers)
+            if profile_policy_for_order(order, profile)["include_header"]:
+                ws.append(["SKU", "Description", "Bonus", "Quantity"] if fmt == "order_sheet" else headers)
 
             for row in data_rows:
                 ws.append(row)

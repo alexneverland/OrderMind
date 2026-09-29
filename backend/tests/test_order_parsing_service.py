@@ -2,6 +2,7 @@ import pytest
 from unittest.mock import AsyncMock
 
 from backend.app.models.company import Company
+from backend.app.models.business_settings import CompanyBusinessSettings
 from backend.app.models.customer import Customer
 from backend.app.services.order_parsing_service import OrderParsingService
 from backend.app.schemas.order import NormalizedOrder, NormalizedOrderLineDraft
@@ -124,6 +125,8 @@ async def test_ai_quantity_evidence_handles_two_products_and_bonus(db_session):
     company = Company(name="AI order company")
     db_session.add(company)
     db_session.commit()
+    db_session.add(CompanyBusinessSettings(company_id=company.id, bonus_enabled=True, bonus_expression_mode="paid_plus_bonus"))
+    db_session.commit()
     customer = Customer(company_id=company.id, customer_code="AI", customer_name="AI customer")
     db_session.add(customer)
     db_session.commit()
@@ -150,7 +153,7 @@ async def test_ai_quantity_evidence_handles_two_products_and_bonus(db_session):
         db_session, company.id, customer.id, row
     )
     assert [(item.product_phrase, item.quantity, item.bonus_quantity, item.unit) for item in order.items] == [
-        ("131382", 56.0, 6.0, "piece"), ("180534", 10.0, 1.0, "case"),
+        ("131382", 56.0, 6.0, "unknown"), ("180534", 10.0, 1.0, "case"),
     ]
 
 
@@ -160,6 +163,7 @@ async def test_bare_bonus_inherits_explicit_quantity_unit(db_session, expression
     company = Company(name=f"Bonus unit {expression}")
     db_session.add(company)
     db_session.flush()
+    db_session.add(CompanyBusinessSettings(company_id=company.id, bonus_enabled=True, bonus_expression_mode="paid_plus_bonus"))
     customer = Customer(company_id=company.id, customer_code="BU", customer_name="Bonus buyer")
     db_session.add(customer)
     db_session.commit()
@@ -189,6 +193,7 @@ async def test_mixed_explicit_paid_and_bonus_units_are_not_silently_combined(db_
     company = Company(name="Mixed bonus units")
     db_session.add(company)
     db_session.flush()
+    db_session.add(CompanyBusinessSettings(company_id=company.id, bonus_enabled=True, bonus_expression_mode="paid_plus_bonus"))
     customer = Customer(company_id=company.id, customer_code="MU", customer_name="Mixed buyer")
     db_session.add(customer)
     db_session.commit()
@@ -233,4 +238,4 @@ async def test_ai_cannot_take_measure_column_as_order_unit(db_session):
         db_session, company.id, customer.id, row
     )
     assert order.items[0].quantity == 35
-    assert order.items[0].unit == "piece"
+    assert order.items[0].unit == "unknown"

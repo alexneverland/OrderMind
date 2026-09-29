@@ -25,6 +25,7 @@ from backend.app.core.database import Base
 from backend.app.config import settings
 from backend.app.models import (
     company,
+    business_settings,
     customer,
     product,
     memory,

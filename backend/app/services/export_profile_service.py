@@ -27,6 +27,21 @@ class ExportProfileService:
     SUPPORTED_ENCODINGS = {"utf-8", "utf-8-sig", "windows-1253", "iso-8859-7", "latin1", "ascii"}
 
     @classmethod
+    def validate_order_sheet_policy(cls, fmt, separate, marker, output_unit, convert):
+        if fmt != "order_sheet":
+            if separate or marker or output_unit != "source" or convert:
+                raise ExportProfileValidationError("Bonus and conversion rules require order_sheet format")
+            return
+        if output_unit not in {"source", "piece"}:
+            raise ExportProfileValidationError("Order sheet output unit must be source or piece")
+        if convert != (output_unit == "piece"):
+            raise ExportProfileValidationError("Case conversion must match piece output unit")
+        if marker and not separate:
+            raise ExportProfileValidationError("Bonus marker requires a separate bonus row")
+        if separate and (not marker or not marker.strip()):
+            raise ExportProfileValidationError("Separate bonus rows require a marker")
+
+    @classmethod
     def validate_profile_mappings(cls, mappings) -> None:
         if not mappings or len(mappings) == 0:
             raise ExportProfileValidationError("Export profile must define at least one column mapping.")
@@ -84,6 +99,8 @@ class ExportProfileService:
                 raise ExportProfileValidationError("Order sheet profiles have fixed columns and no mappings")
         else:
             cls.validate_profile_mappings(payload.mappings)
+        cls.validate_order_sheet_policy(fmt, payload.bonus_separate_row, payload.bonus_marker,
+                                        payload.quantity_output_unit, payload.convert_case_using_pieces_per_case)
 
         profile = ExportProfile(
             company_id=payload.company_id,
@@ -91,7 +108,11 @@ class ExportProfileService:
             format=fmt,
             delimiter=payload.delimiter,
             include_header=payload.include_header,
-            encoding=enc
+            encoding=enc,
+            bonus_separate_row=payload.bonus_separate_row,
+            bonus_marker=payload.bonus_marker,
+            quantity_output_unit=payload.quantity_output_unit,
+            convert_case_using_pieces_per_case=payload.convert_case_using_pieces_per_case,
         )
         db.add(profile)
         db.flush()
@@ -155,6 +176,13 @@ class ExportProfileService:
                 raise ExportProfileValidationError(f"Unsupported encoding '{payload.encoding}'. Supported: {sorted(list(cls.SUPPORTED_ENCODINGS))}")
             profile.encoding = enc
 
+        for field in ("bonus_separate_row", "bonus_marker", "quantity_output_unit", "convert_case_using_pieces_per_case"):
+            if field in payload.model_fields_set:
+                value = getattr(payload, field)
+                if value is None and field != "bonus_marker":
+                    raise ExportProfileValidationError(f"{field} cannot be null")
+                setattr(profile, field, value)
+
         if payload.mappings is not None:
             if profile.format == "order_sheet":
                 if payload.mappings:
@@ -181,6 +209,8 @@ class ExportProfileService:
 
         if profile.format != "order_sheet" and not profile.field_mappings:
             raise ExportProfileValidationError("Export profile must define at least one column mapping")
+        cls.validate_order_sheet_policy(profile.format, profile.bonus_separate_row, profile.bonus_marker,
+                                        profile.quantity_output_unit, profile.convert_case_using_pieces_per_case)
 
         db.commit()
         db.refresh(profile)

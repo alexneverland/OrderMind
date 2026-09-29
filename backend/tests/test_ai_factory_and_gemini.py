@@ -97,7 +97,7 @@ async def test_gemini_provider_async_call_and_unit_resolution():
     # Item 3: Unspecified unit
     assert items[2].product_phrase == "κόκκινα"
     assert items[2].quantity == 10.0
-    assert items[2].unit == "piece"
+    assert items[2].unit == "unknown"
     assert items[2].raw_unit is None
     assert items[2].unit_explicit is False
 

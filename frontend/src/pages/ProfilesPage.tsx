@@ -37,6 +37,9 @@ function ProfileEditor({
   const [delimiter, setDelimiter] = useState(profile?.delimiter || ",");
   const [encoding, setEncoding] = useState(profile?.encoding || "utf-8-sig");
   const [header, setHeader] = useState(profile?.include_header ?? true);
+  const [bonusSeparateRow, setBonusSeparateRow] = useState(profile?.bonus_separate_row ?? false);
+  const [bonusMarker, setBonusMarker] = useState(profile?.bonus_marker ?? "");
+  const [quantityOutputUnit, setQuantityOutputUnit] = useState<"source" | "piece">(profile?.quantity_output_unit ?? "source");
   const [mappings, setMappings] = useState<Mapping[]>(
     profile?.field_mappings.map(
       ({
@@ -79,7 +82,11 @@ function ProfileEditor({
       delimiter,
       encoding,
       include_header: header,
-      mappings: mappings.map((m, i) => ({
+      bonus_separate_row: format === "order_sheet" && bonusSeparateRow,
+      bonus_marker: format === "order_sheet" && bonusSeparateRow ? bonusMarker : null,
+      quantity_output_unit: format === "order_sheet" ? quantityOutputUnit : "source",
+      convert_case_using_pieces_per_case: format === "order_sheet" && quantityOutputUnit === "piece",
+      mappings: format === "order_sheet" ? [] : mappings.map((m, i) => ({
         ...m,
         column_order: i + 1,
         source_field: m.mapping_type === "source_field" ? m.source_field : null,
@@ -142,10 +149,12 @@ function ProfileEditor({
               <select
                 value={format}
                 onChange={(e) => setFormat(e.target.value)}
+                disabled={!!profile && profile.format === "order_sheet"}
               >
                 <option value="xlsx">XLSX</option>
                 <option value="csv">CSV</option>
                 <option value="json">JSON</option>
+                <option value="order_sheet" disabled={!!profile && profile.format !== "order_sheet"}>4-column order sheet</option>
               </select>
             </label>
             <label>
@@ -181,6 +190,24 @@ function ProfileEditor({
             />{" "}
             Include header row
           </label>
+          {format === "order_sheet" && (
+            <div className="stack-form">
+              <p>Fixed columns: SKU, description, bonus marker, quantity. Choose the business rules for this profile.</p>
+              <label className="check-row"><input type="checkbox" checked={bonusSeparateRow}
+                onChange={(e) => setBonusSeparateRow(e.target.checked)} /> Separate bonus row</label>
+              {bonusSeparateRow && <label>Bonus marker
+                <input value={bonusMarker} maxLength={20} required
+                  onChange={(e) => setBonusMarker(e.target.value)} />
+              </label>}
+              <label>Output quantity unit
+                <select value={quantityOutputUnit} onChange={(e) => setQuantityOutputUnit(e.target.value as "source" | "piece")}>
+                  <option value="source">Source unit (cases remain cases)</option>
+                  <option value="piece">Pieces (convert cases using pieces per case)</option>
+                </select>
+              </label>
+            </div>
+          )}
+          {format !== "order_sheet" && <>
           <div className="section-heading">
             <div>
               <div className="eyebrow">COLUMNS</div>
@@ -286,6 +313,7 @@ function ProfileEditor({
               </div>
             ))}
           </div>
+          </>}
           <div className="modal-actions">
             <button
               className="button"
@@ -344,6 +372,10 @@ export function ProfilesPage() {
         encoding: "utf-8-sig",
         include_header: false,
         mappings: [],
+        bonus_separate_row: false,
+        bonus_marker: null,
+        quantity_output_unit: "source",
+        convert_case_using_pieces_per_case: false,
       });
       await refresh();
     } catch (e) {
@@ -398,12 +430,12 @@ export function ProfilesPage() {
                     <td>{p.field_mappings.length}</td>
                     <td>
                       <div className="row-actions">
-                        {p.format !== "order_sheet" && <button
+                        <button
                           className="text-button"
                           onClick={() => setEditing(p)}
                         >
                           Edit
-                        </button>}
+                        </button>
                         <button
                           className="text-button danger"
                           onClick={() => void remove(p)}

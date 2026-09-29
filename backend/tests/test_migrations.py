@@ -25,12 +25,34 @@ def test_fresh_sqlite_database_reaches_model_head(tmp_path: Path):
     _alembic(database, "check")
     with sqlite3.connect(database) as connection:
         connection.execute("PRAGMA foreign_keys=ON")
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("e5a7b9c20012",)
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("f6a7b9c20013",)
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
         connection.execute("INSERT INTO companies (id,name) VALUES (1,'A'),(2,'B')")
         connection.execute("INSERT INTO products (id,company_id,sku,description,unit,active) VALUES (1,1,'SKU-A','Product A','piece',1)")
         with pytest.raises(sqlite3.IntegrityError):
             connection.execute("INSERT INTO company_product_unit_preferences (company_id,product_id,unit) VALUES (2,1,'kg')")
+
+
+def test_existing_companies_and_order_sheets_get_explicit_compatibility_policy(tmp_path: Path):
+    database = tmp_path / "existing.sqlite"
+    _alembic(database, "upgrade", "e5a7b9c20012")
+    with sqlite3.connect(database) as connection:
+        connection.execute("INSERT INTO companies (id,name) VALUES (1,'Existing')")
+        connection.execute("INSERT INTO export_profiles (id,company_id,name,format,include_header,encoding) VALUES (1,1,'Existing sheet','order_sheet',1,'utf-8')")
+    _alembic(database, "upgrade", "head")
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("""SELECT bonus_enabled,bonus_expression_mode,unitless_order_behavior,
+            allow_packaging_conversion,learn_unit_preferences FROM company_business_settings WHERE company_id=1""").fetchone() == (
+                1, "paid_plus_bonus", "learned_product_preference", 1, 1,
+            )
+        assert connection.execute("""SELECT include_header,bonus_separate_row,bonus_marker,quantity_output_unit,
+            convert_case_using_pieces_per_case FROM export_profiles WHERE id=1""").fetchone() == (
+                0, 1, "Α", "piece", 1,
+            )
+        connection.execute("INSERT INTO companies (id,name) VALUES (2,'New')")
+        assert connection.execute("SELECT * FROM company_business_settings WHERE company_id=2").fetchone() is None
+        connection.execute("PRAGMA foreign_keys=ON")
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
 
 
 def test_tenant_migration_preserves_rows_and_enforces_company_links(tmp_path: Path):

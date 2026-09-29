@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
   approveOrder,
@@ -20,7 +20,7 @@ import {
   percent,
   Spinner,
 } from "../components/ui";
-import type { Order, OrderLine, Product } from "../types";
+import type { ExportProfile, Order, OrderLine, Product } from "../types";
 
 const units = ["piece", "case", "kg", "pallet"];
 const readyStatuses = new Set(["auto_accepted", "confirmed", "corrected"]);
@@ -175,11 +175,13 @@ function ProductDialog({
 function LineCard({
   order,
   line,
+  previewProfile,
   refresh,
   setError,
 }: {
   order: Order;
   line: OrderLine;
+  previewProfile: ExportProfile | null;
   refresh: () => Promise<void>;
   setError: (value: string) => void;
 }) {
@@ -188,7 +190,7 @@ function LineCard({
   const [quantity, setQuantity] = useState(
     String(line.final_quantity ?? line.requested_quantity),
   );
-  const [unit, setUnit] = useState(line.final_unit ?? line.requested_unit);
+  const [unit, setUnit] = useState(line.final_unit ?? (line.requested_unit === "unknown" ? "unknown" : line.requested_unit));
   const [bonusQuantity, setBonusQuantity] = useState(String(line.final_bonus_quantity ?? line.bonus_quantity ?? 0));
   const [busy, setBusy] = useState(false);
   const editable = order.status === "pending_review";
@@ -211,7 +213,7 @@ function LineCard({
   const finalBonusQuantity = line.final_bonus_quantity ?? line.bonus_quantity ?? 0;
   const changed =
     finalQuantity !== line.requested_quantity ||
-    finalUnit !== line.requested_unit ||
+    (finalUnit !== null && finalUnit !== line.requested_unit) ||
     finalBonusQuantity !== (line.bonus_quantity ?? 0);
   return (
     <article className="line-card">
@@ -243,7 +245,7 @@ function LineCard({
         <div>
           <span className="field-label">Requested</span>
           <strong>
-            {line.requested_quantity} {line.requested_unit}
+            {line.requested_quantity} {line.unit_explicit ? (line.requested_unit === "unknown" ? line.raw_unit || "unknown unit" : line.requested_unit) : "· unit not specified"}
           </strong>
           {!!line.bonus_quantity && <small> + {line.bonus_quantity} δώρο</small>}
         </div>
@@ -252,21 +254,21 @@ function LineCard({
             Final {changed && <em>changed</em>}
           </span>
           <strong>
-            {finalQuantity} {finalUnit}
+            {finalQuantity} {finalUnit === "unknown" || !finalUnit ? "· unit not set" : finalUnit}
           </strong>
           {!!finalBonusQuantity && <small> + {finalBonusQuantity} δώρο</small>}
         </div>
         <div>
-          <span className="field-label">Εξαγωγή 4 στηλών</span>
-          {line.order_sheet_paid_quantity != null ? (
+          <span className="field-label">Ποσότητα εξαγωγής {previewProfile?.name || ""}</span>
+          {previewProfile && line.order_sheet_paid_quantity != null ? (
             <>
-              <strong>{line.order_sheet_paid_quantity} {line.order_sheet_unit === "kg" ? "κιλά" : "τεμάχια"}</strong>
+              <strong>{line.order_sheet_paid_quantity} {line.order_sheet_unit === "kg" ? "κιλά" : line.order_sheet_unit === "case" ? "κιβώτια" : "τεμάχια"}</strong>
               {!!line.order_sheet_bonus_quantity && (
-                <small> + {line.order_sheet_bonus_quantity} {line.order_sheet_unit === "kg" ? "κιλά" : "τεμάχια"} δώρο (χωριστή γραμμή Α)</small>
+                <small> + {line.order_sheet_bonus_quantity} {line.order_sheet_unit === "kg" ? "κιλά" : line.order_sheet_unit === "case" ? "κιβώτια" : "τεμάχια"} δώρο (χωριστή γραμμή {line.order_sheet_bonus_marker})</small>
               )}
             </>
           ) : (
-            <small>{line.order_sheet_conversion_error || "Η μετατροπή δεν είναι ακόμη διαθέσιμη"}</small>
+            <small>{previewProfile ? line.order_sheet_conversion_error || "Η μετατροπή δεν είναι ακόμη διαθέσιμη" : "Επίλεξε προφίλ 4 στηλών για προεπισκόπηση"}</small>
           )}
         </div>
         <div>
@@ -354,6 +356,7 @@ function LineCard({
           <label>
             Final unit
             <select value={unit} onChange={(e) => setUnit(e.target.value)}>
+              {unit === "unknown" && <option value="unknown" disabled>Choose unit</option>}
               {units.map((u) => (
                 <option key={u} value={u}>
                   {u}
@@ -368,7 +371,7 @@ function LineCard({
           </label>
           <button
             className="button primary"
-            disabled={busy || Number(quantity) <= 0}
+            disabled={busy || Number(quantity) <= 0 || unit === "unknown"}
           >
             Save values
           </button>
@@ -389,19 +392,26 @@ function LineCard({
 export function OrderReviewPage() {
   const { orderId } = useParams();
   const id = Number(orderId);
+  const [previewProfileId, setPreviewProfileId] = useState("");
+  const [profileId, setProfileId] = useState("");
   const {
     data: order,
     error: loadError,
     loading,
     refresh,
-  } = useAsync(() => getOrder(id), [id]);
+  } = useAsync(() => getOrder(id, previewProfileId ? Number(previewProfileId) : undefined), [id, previewProfileId]);
   const { data: profiles } = useAsync(
     () => (order ? getProfiles(order.company_id) : Promise.resolve([])),
     [order?.company_id],
   );
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [profileId, setProfileId] = useState("");
+  useEffect(() => {
+    if (!previewProfileId) {
+      const first = profiles?.find((p) => p.format === "order_sheet");
+      if (first) setPreviewProfileId(String(first.id));
+    }
+  }, [profiles, previewProfileId]);
   const [confirmApproval, setConfirmApproval] = useState(false);
   if (loading && !order)
     return (
@@ -425,6 +435,7 @@ export function OrderReviewPage() {
   const unresolved = order.lines.filter(
     (l) => l.status === "unresolved",
   ).length;
+  const previewProfile = profiles?.find((p) => p.id === Number(previewProfileId) && p.format === "order_sheet") || null;
   const approve = async () => {
     setBusy(true);
     setError("");
@@ -511,11 +522,21 @@ export function OrderReviewPage() {
             </div>
             <span className="muted">{order.lines.length} lines</span>
           </div>
+          {!!profiles?.some((p) => p.format === "order_sheet") && (
+            <label>Προεπισκόπηση προφίλ 4 στηλών
+              <select aria-label="Προεπισκόπηση προφίλ 4 στηλών" value={previewProfile ? previewProfileId : ""}
+                onChange={(e) => setPreviewProfileId(e.target.value)}>
+                <option value="">Επίλεξε προφίλ</option>
+                {profiles.filter((p) => p.format === "order_sheet").map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+            </label>
+          )}
           {order.lines.map((line) => (
             <LineCard
               key={line.id}
               order={order}
               line={line}
+              previewProfile={previewProfile}
               refresh={refresh}
               setError={setError}
             />

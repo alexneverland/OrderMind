@@ -6,6 +6,7 @@ import openpyxl
 from sqlalchemy.orm import Session
 
 from backend.app.models.company import Company
+from backend.app.models.business_settings import CompanyBusinessSettings
 from backend.app.models.customer import Customer
 from backend.app.models.product import Product, Packaging
 from backend.app.models.order import Order
@@ -13,6 +14,7 @@ from backend.app.schemas.workflow import OrderStatus
 from backend.app.schemas.matching import LineMatchResult, MatchedProductInfo, ConfidenceResult, MatchDecision
 from backend.app.schemas.export import (
     ExportProfileCreate,
+    ExportProfileUpdate,
     ExportFieldMappingCreate,
     MappingType,
 )
@@ -31,6 +33,7 @@ def setup_export_data(db_session: Session, empty_master_fields: bool = False):
     company = Company(name="Hellas Food Logistics")
     db_session.add(company)
     db_session.flush()
+    db_session.add(CompanyBusinessSettings(company_id=company.id, unitless_order_behavior="piece"))
 
     customer = Customer(
         company_id=company.id,
@@ -118,6 +121,7 @@ def test_export_profile_validation_rules(db_session):
             )
         )
 
+
     # 3. Invalid source_field rejected
     with pytest.raises(ExportProfileValidationError, match="Invalid source_field"):
         ExportProfileService.create_profile(
@@ -143,6 +147,21 @@ def test_export_profile_validation_rules(db_session):
                 ]
             )
         )
+
+
+def test_order_sheet_bonus_marker_can_be_cleared(db_session):
+    company = Company(name="Marker company")
+    db_session.add(company)
+    db_session.commit()
+    profile = ExportProfileService.create_profile(db_session, ExportProfileCreate(
+        company_id=company.id, name="Gift sheet", format="order_sheet", mappings=[],
+        bonus_separate_row=True, bonus_marker="Α",
+    ))
+    updated = ExportProfileService.update_profile(db_session, profile.id, ExportProfileUpdate(
+        bonus_separate_row=False, bonus_marker=None,
+    ))
+    assert updated.bonus_separate_row is False
+    assert updated.bonus_marker is None
 
 
 def test_export_xlsx(db_session):
@@ -203,6 +222,19 @@ def test_four_column_order_sheet_converts_cases_and_separates_bonus_from_snapsho
     company = Company(name="Order sheet company")
     db_session.add(company)
     db_session.flush()
+    db_session.add(CompanyBusinessSettings(company_id=company.id, bonus_enabled=True, bonus_expression_mode="paid_plus_bonus", allow_packaging_conversion=True))
+    profile = ExportProfileService.create_profile(db_session, ExportProfileCreate(
+        company_id=company.id, name="Four columns", format="order_sheet", mappings=[], include_header=False,
+        bonus_separate_row=True, bonus_marker="Α", quantity_output_unit="piece",
+        convert_case_using_pieces_per_case=True,
+    ))
+    source_profile = ExportProfileService.create_profile(db_session, ExportProfileCreate(
+        company_id=company.id, name="Source units", format="order_sheet", mappings=[], include_header=False,
+        bonus_separate_row=True, bonus_marker="FREE", quantity_output_unit="source",
+    ))
+    no_bonus_profile = ExportProfileService.create_profile(db_session, ExportProfileCreate(
+        company_id=company.id, name="No bonus row", format="order_sheet", mappings=[], include_header=False,
+    ))
     customer = Customer(company_id=company.id, customer_code="SHEET", customer_name="Buyer")
     product = Product(company_id=company.id, sku="180534", description="ΩΜΟΠΛΑΤΗ", unit="piece")
     db_session.add_all([customer, product])
@@ -221,7 +253,7 @@ def test_four_column_order_sheet_converts_cases_and_separates_bonus_from_snapsho
     order = OrderWorkflowService.create_order_from_match(
         db_session, company.id, customer.id, match.original_text, [match]
     )
-    pending = client.get(f"/api/v1/orders/{order.id}")
+    pending = client.get(f"/api/v1/orders/{order.id}?profile_id={profile.id}")
     assert pending.status_code == 200, pending.text
     assert pending.json()["lines"][0]["order_sheet_paid_quantity"] == 120
     assert pending.json()["lines"][0]["order_sheet_bonus_quantity"] == 12
@@ -229,25 +261,42 @@ def test_four_column_order_sheet_converts_cases_and_separates_bonus_from_snapsho
     OrderWorkflowService.approve_order(db_session, order.id)
     package.pieces_per_case = 24
     db_session.commit()
-    approved = client.get(f"/api/v1/orders/{order.id}")
+    approved = client.get(f"/api/v1/orders/{order.id}?profile_id={profile.id}")
     assert approved.status_code == 200, approved.text
     assert approved.json()["lines"][0]["order_sheet_paid_quantity"] == 120
     assert approved.json()["lines"][0]["order_sheet_bonus_quantity"] == 12
-    profile = ExportProfileService.create_profile(db_session, ExportProfileCreate(
-        company_id=company.id, name="Four columns", format="order_sheet", mappings=[],
-    ))
+    unsupported_preview = client.get(f"/api/v1/orders/{order.id}?profile_id={no_bonus_profile.id}")
+    assert unsupported_preview.status_code == 200
+    assert unsupported_preview.json()["lines"][0]["order_sheet_paid_quantity"] is None
+    assert "does not define how to export bonus goods" in unsupported_preview.json()["lines"][0]["order_sheet_conversion_error"]
+    with pytest.raises(OrderExportError, match="does not define how to export bonus goods"):
+        ExportEngine.export_order(db_session, order.id, no_bonus_profile.id)
     content, _, _ = ExportEngine.export_order(db_session, order.id, profile.id)
     rows = list(openpyxl.load_workbook(io.BytesIO(content)).active.values)
     assert rows == [
         ("180534", "ΩΜΟΠΛΑΤΗ", None, 120),
         ("180534", "ΩΜΟΠΛΑΤΗ", "Α", 12),
     ]
+    source_content, _, _ = ExportEngine.export_order(db_session, order.id, source_profile.id)
+    assert list(openpyxl.load_workbook(io.BytesIO(source_content)).active.values) == [
+        ("180534", "ΩΜΟΠΛΑΤΗ", None, 10),
+        ("180534", "ΩΜΟΠΛΑΤΗ", "FREE", 1),
+    ]
+    profile.bonus_marker = "CHANGED"
+    profile.quantity_output_unit = "source"
+    profile.convert_case_using_pieces_per_case = False
+    db_session.commit()
+    frozen_content, _, _ = ExportEngine.export_order(db_session, order.id, profile.id)
+    assert list(openpyxl.load_workbook(io.BytesIO(frozen_content)).active.values) == rows
+    frozen_preview = client.get(f"/api/v1/orders/{order.id}?profile_id={profile.id}")
+    assert frozen_preview.json()["lines"][0]["order_sheet_bonus_marker"] == "Α"
 
 
 def test_create_from_match_preserves_grounded_bonus(client, db_session):
     company = Company(name="Bonus API company")
     db_session.add(company)
     db_session.flush()
+    db_session.add(CompanyBusinessSettings(company_id=company.id, bonus_enabled=True, bonus_expression_mode="paid_plus_bonus"))
     customer = Customer(company_id=company.id, customer_code="BONUS", customer_name="Bonus buyer")
     product = Product(company_id=company.id, sku="131382", description="Frank", unit="piece")
     db_session.add_all([customer, product])
@@ -262,6 +311,27 @@ def test_create_from_match_preserves_grounded_bonus(client, db_session):
     })
     assert response.status_code == 201, response.text
     assert response.json()["lines"][0]["bonus_quantity"] == 6
+
+
+def test_order_sheet_rejects_unproven_conversion_and_keeps_neutral_source_unit(db_session):
+    from backend.app.services.export_engine import convert_order_sheet_quantities
+
+    with pytest.raises(OrderExportError, match="not enabled"):
+        convert_order_sheet_quantities(10, 1, "case", 12, "piece", True, False)
+    with pytest.raises(OrderExportError, match="valid case packaging ratio"):
+        convert_order_sheet_quantities(10, 1, "case", None, "piece", True, True)
+    with pytest.raises(OrderExportError, match="cannot be converted"):
+        convert_order_sheet_quantities(10, 0, "kg", None, "piece", True, True)
+
+    data = setup_export_data(db_session)
+    company = data["company"]
+    profile = ExportProfileService.create_profile(db_session, ExportProfileCreate(
+        company_id=company.id, name="Neutral sheet", format="order_sheet",
+        mappings=[], include_header=False,
+    ))
+    # A no-bonus order remains usable with neutral source-unit output.
+    content, _, _ = ExportEngine.export_order(db_session, data["order"].id, profile.id)
+    assert len(list(openpyxl.load_workbook(io.BytesIO(content)).active.values)) == 2
 
 
 def test_reexport_uses_approved_snapshot_including_empty_master_fields(db_session):

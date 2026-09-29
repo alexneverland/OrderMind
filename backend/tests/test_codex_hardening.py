@@ -12,6 +12,7 @@ from sqlalchemy.orm.exc import StaleDataError
 from backend.app.config import settings
 from backend.app.core.text_normalizer import is_quantity_grounded_in_span, is_unit_grounded_in_span
 from backend.app.models.company import Company
+from backend.app.models.business_settings import CompanyBusinessSettings
 from backend.app.models.customer import Customer
 from backend.app.models.product import Product, Packaging, ProductAlias
 from backend.app.models.order import Order, OrderLine, MatchCandidate
@@ -34,6 +35,7 @@ def setup_hardening_data(db_session: Session):
     company = Company(name="Hellas Food Services")
     db_session.add(company)
     db_session.flush()
+    db_session.add(CompanyBusinessSettings(company_id=company.id, unitless_order_behavior="piece"))
 
     customer = Customer(
         company_id=company.id,
@@ -237,7 +239,7 @@ def test_deterministic_grounding_quantity_and_unit():
     assert not is_quantity_grounded_in_span(10, "10+1", "10+1", bonus_quantity=1)
     assert is_quantity_grounded_in_span(10, "10KIB+1KIB", "10KIB+1KIB", quantity_text="10KIB+1KIB", bonus_quantity=1)
     assert not is_quantity_grounded_in_span(10, "10+100", "10+100", quantity_text="10+1", bonus_quantity=1)
-    assert is_unit_grounded_in_span("piece", None, False, row, row, "180406", "35")
+    assert is_unit_grounded_in_span("unknown", None, False, row, row, "180406", "35")
     assert not is_unit_grounded_in_span("kg", "ΚΙΛ", True, row, row, "180406", "35")
 
     # Default quantity 1.0 is grounded when no explicit number is present
@@ -250,7 +252,7 @@ def test_deterministic_grounding_quantity_and_unit():
     assert is_unit_grounded_in_span("case", "κιβωτια", True, "2 κιβωτια μπυρες", "2 κιβωτια μπυρες") is True
     assert is_unit_grounded_in_span("piece", "τεμαχιο", True, "1 τεμαχιο τυρι", "1 τεμαχιο τυρι") is True
     # Default piece is grounded if no unit mentioned
-    assert is_unit_grounded_in_span("piece", None, False, "5 φετα", "5 φετα") is True
+    assert is_unit_grounded_in_span("unknown", None, False, "5 φετα", "5 φετα") is True
     # Contradicted unit: AI extracted raw_unit='κιλα' (kg) when text only says 'κιβωτια' (case)
     assert is_unit_grounded_in_span("kg", "κιλα", True, "2 κιβωτια μπυρες", "2 κιβωτια μπυρες") is False
 

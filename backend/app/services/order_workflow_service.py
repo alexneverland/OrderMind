@@ -10,7 +10,9 @@ from backend.app.models.order import Order, OrderLine, MatchCandidate
 from backend.app.models.company import Company
 from backend.app.models.customer import Customer
 from backend.app.models.product import Product
+from backend.app.models.export import ExportProfile
 from backend.app.models.memory import HumanCorrection, CompanyProductUnitPreference
+from backend.app.services.business_settings_service import effective_business_settings, validate_order_quantity_policy
 from backend.app.schemas.workflow import (
     OrderStatus,
     OrderLineStatus,
@@ -71,6 +73,9 @@ class OrderWorkflowService:
 
         if customer.company_id != company_id:
             raise ValueError(f"Customer {customer_id} belongs to company {customer.company_id}, not {company_id}")
+        business_settings = effective_business_settings(db, company_id)
+        for line in lines:
+            validate_order_quantity_policy(business_settings, line.quantity_text, line.bonus_quantity)
 
         if not order_number or not order_number.strip():
             now_str = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
@@ -107,7 +112,10 @@ class OrderWorkflowService:
 
                 matched_prod_id = line_res.best_match.product_id if line_res.best_match else None
                 final_sku = line_res.best_match.sku if line_res.best_match else None
-                final_unit = line_res.final_unit or line_res.unit
+                requested_unit = line_res.unit if line_res.unit_explicit else "unknown"
+                final_unit = line_res.final_unit or (requested_unit if requested_unit in {"piece", "case", "kg", "pallet"} else None)
+                if final_unit is None and not line_res.unit_explicit and business_settings.unitless_order_behavior == "piece":
+                    final_unit = "piece"
 
                 order_line = OrderLine(
                     order_id=order.id,
@@ -115,7 +123,7 @@ class OrderWorkflowService:
                     original_text=line_res.original_text,
                     product_phrase=line_res.product_phrase,
                     requested_quantity=line_res.quantity,
-                    requested_unit=line_res.unit,
+                    requested_unit=requested_unit,
                     raw_unit=line_res.raw_unit,
                     unit_explicit=line_res.unit_explicit,
                     quantity_text=line_res.quantity_text,
@@ -383,7 +391,7 @@ class OrderWorkflowService:
 
                 order_line.final_unit = canonical_unit
 
-                if unit_changed and order_line.matched_product_id:
+                if unit_changed and order_line.matched_product_id and effective_business_settings(db, order.company_id).learn_unit_preferences:
                     preference = sqlite_insert(CompanyProductUnitPreference).values(
                         company_id=order.company_id,
                         product_id=order_line.matched_product_id,
@@ -439,6 +447,7 @@ class OrderWorkflowService:
             OrderLineStatus.CONFIRMED.value,
             OrderLineStatus.CORRECTED.value,
         }
+        business_settings = effective_business_settings(db, order.company_id)
 
         for line in order.lines:
             if line.status not in allowed_line_statuses:
@@ -453,6 +462,8 @@ class OrderWorkflowService:
             if not product or product.company_id != order.company_id or not product.active:
                 raise OrderApprovalError(f"Order line {line.line_number} has an invalid or inactive product.")
             unit = line.final_unit or line.requested_unit
+            if unit not in {"piece", "case", "kg", "pallet"}:
+                raise OrderApprovalError(f"Order line {line.line_number} has no resolved final unit.")
             compatible, package_id, reason = resolve_product_packaging(
                 product, unit, line.product_phrase
             )
@@ -468,6 +479,10 @@ class OrderWorkflowService:
             bonus = line.final_bonus_quantity if line.final_bonus_quantity is not None else line.bonus_quantity
             if not math.isfinite(bonus) or bonus < 0:
                 raise OrderApprovalError(f"Order line {line.line_number} has an invalid free quantity.")
+            try:
+                validate_order_quantity_policy(business_settings, line.quantity_text, bonus)
+            except ValueError as exc:
+                raise OrderApprovalError(f"Order line {line.line_number}: {exc}") from exc
 
         try:
             order.version += 1
@@ -478,6 +493,18 @@ class OrderWorkflowService:
 
             customer = order.customer
             order.approved_snapshot = {
+                "business_settings": business_settings.model_dump(exclude={"company_id"}),
+                "export_profiles": {
+                    str(profile.id): {
+                        "format": profile.format,
+                        "bonus_separate_row": profile.bonus_separate_row,
+                        "bonus_marker": profile.bonus_marker,
+                        "quantity_output_unit": profile.quantity_output_unit,
+                        "convert_case_using_pieces_per_case": profile.convert_case_using_pieces_per_case,
+                        "include_header": profile.include_header,
+                    }
+                    for profile in db.execute(select(ExportProfile).where(ExportProfile.company_id == order.company_id)).scalars()
+                },
                 "order": {
                     "id": order.id,
                     "order_number": order.order_number,

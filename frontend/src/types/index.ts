@@ -45,6 +45,8 @@ export type OrderLine = {
   product_phrase: string;
   requested_quantity: number;
   requested_unit: string;
+  raw_unit?: string | null;
+  unit_explicit?: boolean;
   quantity_text?: string | null;
   bonus_quantity?: number;
   final_bonus_quantity?: number | null;
@@ -56,6 +58,7 @@ export type OrderLine = {
   order_sheet_paid_quantity?: number | null;
   order_sheet_bonus_quantity?: number | null;
   order_sheet_unit?: string | null;
+  order_sheet_bonus_marker?: string | null;
   order_sheet_conversion_error?: string | null;
   confidence_score: number;
   confidence_reasons: string[];
@@ -114,5 +117,9 @@ export type ExportProfile = {
   delimiter: string;
   encoding: string;
   include_header: boolean;
+  bonus_separate_row: boolean;
+  bonus_marker: string | null;
+  quantity_output_unit: "source" | "piece";
+  convert_case_using_pieces_per_case: boolean;
   field_mappings: (Mapping & { id: number })[];
 };

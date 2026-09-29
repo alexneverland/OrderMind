@@ -101,12 +101,12 @@ def resolve_unit(unit_str: Optional[str]) -> Tuple[str, Optional[str], bool]:
     - unit_explicit: True if a unit was explicitly mentioned in the order
 
     Critical safety guarantees:
-    1. Unspecified unit -> ("piece", None, False)
+    1. Unspecified unit -> ("unknown", None, False)
     2. Known explicit unit -> (canonical, raw_unit, True)
     3. Unknown explicit unit (e.g. "trays") -> ("unknown", "trays", True) [NEVER silently turned to piece!]
     """
     if not unit_str or not str(unit_str).strip():
-        return ("piece", None, False)
+        return ("unknown", None, False)
 
     raw_clean = str(unit_str).strip()
     norm_unit = normalize_text(raw_clean)
@@ -281,7 +281,7 @@ def is_unit_grounded_in_span(
     explicit_units = {UNIT_MAPPING[token] for token in span_tokens if token in UNIT_MAPPING}
 
     if not unit_explicit:
-        return not explicit_units and unit == "piece" and not raw_unit
+        return not explicit_units and unit == "unknown" and not raw_unit
 
     if not raw_unit or not raw_unit.strip():
         return False

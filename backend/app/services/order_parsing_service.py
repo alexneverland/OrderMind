@@ -20,6 +20,7 @@ from backend.app.core.text_normalizer import (
     is_unit_grounded_in_span,
     quantity_expression_units,
 )
+from backend.app.services.business_settings_service import effective_business_settings, validate_order_quantity_policy
 
 logger = logging.getLogger("ordermind.parsing")
 
@@ -58,6 +59,7 @@ class OrderParsingService:
             raise ValueError(f"Customer with id {customer_id} not found")
         if customer.company_id != company_id:
             raise ValueError(f"Customer {customer_id} does not belong to Company {company_id}")
+        business_settings = effective_business_settings(db, company_id)
 
         # 3. Input Adapter normalization
         adapter = get_input_adapter(source_type)
@@ -74,13 +76,15 @@ class OrderParsingService:
         try:
             draft_items: List[NormalizedOrderLineDraft] = await provider.extract_order(
                 normalized_input=normalized_input,
-                context={"company_id": company_id, "customer_id": customer_id}
+                context={"company_id": company_id, "customer_id": customer_id,
+                         "bonus_expression_mode": business_settings.bonus_expression_mode}
             )
             duration_ms = round((time.perf_counter() - start_time) * 1000, 2)
 
             # 6. Build sequential, grounded, validated lines
             order_lines: List[NormalizedOrderLine] = []
             for idx, draft in enumerate(draft_items, start=1):
+                validate_order_quantity_policy(business_settings, draft.quantity_text, draft.bonus_quantity)
                 expression_units = quantity_expression_units(draft.quantity_text)
                 distinct_units = {unit for unit, _ in expression_units}
                 if len(distinct_units) > 1:
@@ -100,7 +104,7 @@ class OrderParsingService:
                     # A bare numeric expression has no requested unit. A unit
                     # elsewhere in the product name or spreadsheet is metadata.
                     draft = draft.model_copy(update={
-                        "unit": "piece", "raw_unit": None, "unit_explicit": False,
+                        "unit": "unknown", "raw_unit": None, "unit_explicit": False,
                     })
                 # Grounding verification: Check that draft original_text or product_phrase exists in input
                 if not normalize_text(draft.original_text) or normalize_text(draft.original_text) not in normalize_text(normalized_input.raw_text):

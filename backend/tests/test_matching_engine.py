@@ -2,6 +2,7 @@ import pytest
 from sqlalchemy.orm import Session
 
 from backend.app.models.company import Company
+from backend.app.models.business_settings import CompanyBusinessSettings
 from backend.app.models.customer import Customer
 from backend.app.models.product import Product, ProductAlias, Packaging
 from backend.app.models.memory import CustomerProductAlias
@@ -13,6 +14,7 @@ def setup_catalog(db_session: Session):
     company = Company(name="Hellas Food Supplies")
     db_session.add(company)
     db_session.flush()
+    db_session.add(CompanyBusinessSettings(company_id=company.id, unitless_order_behavior="piece"))
 
     customer_a = Customer(company_id=company.id, customer_code="CUST-A", customer_name="Super Market Alfa")
     customer_b = Customer(company_id=company.id, customer_code="CUST-B", customer_name="Deli Beta")
@@ -529,4 +531,3 @@ def test_duplicate_deterministic_evidence_prevents_silent_auto_accept(db_session
     assert res.best_match is not None
     assert res.confidence.decision == MatchDecision.NEEDS_REVIEW
     assert "Multiple strong product candidates detected; manual review required." in res.confidence.reasons
-
