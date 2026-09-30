@@ -1,6 +1,8 @@
 import os
 import pandas as pd
 
+# Synthetic catalog examples only. No real contacts or business records.
+
 FIXTURES_DIR = os.path.join(os.path.dirname(__file__), "..", "fixtures")
 os.makedirs(FIXTURES_DIR, exist_ok=True)
 
@@ -8,30 +10,30 @@ os.makedirs(FIXTURES_DIR, exist_ok=True)
 customers_data = [
     {
         "ΚΩΔΙΚΟΣ_ΠΕΛΑΤΗ": "CUST-4531",
-        "ΕΠΩΝΥΜΙΑ_ΠΕΛΑΤΗ": "ΑΒΓ Διανομές Α.Ε.",
-        "EMAIL": "orders@avg-dianomes.test",
-        "ΤΗΛΕΦΩΝΟ": "2101234567",
+        "ΕΠΩΝΥΜΙΑ_ΠΕΛΑΤΗ": "Demo customer 1 (synthetic)",
+        "EMAIL": "orders@customer1.test",
+        "ΤΗΛΕΦΩΝΟ": "",
         "ΚΑΤΑΣΤΑΣΗ": "ΕΝΕΡΓΟΣ"
     },
     {
         "ΚΩΔΙΚΟΣ_ΠΕΛΑΤΗ": "CUST-1022",
-        "ΕΠΩΝΥΜΙΑ_ΠΕΛΑΤΗ": "Μαρκάκης & Σία Ο.Ε.",
-        "EMAIL": "info@markakis-foods.test",
-        "ΤΗΛΕΦΩΝΟ": "2310987654",
+        "ΕΠΩΝΥΜΙΑ_ΠΕΛΑΤΗ": "Demo customer 2 (synthetic)",
+        "EMAIL": "orders@customer2.test",
+        "ΤΗΛΕΦΩΝΟ": "",
         "ΚΑΤΑΣΤΑΣΗ": "ΕΝΕΡΓΟΣ"
     },
     {
         "ΚΩΔΙΚΟΣ_ΠΕΛΑΤΗ": "CUST-8840",
-        "ΕΠΩΝΥΜΙΑ_ΠΕΛΑΤΗ": "Εστίαση Βορείου Ελλάδος",
-        "EMAIL": "supply@estiasi-north.test",
-        "ΤΗΛΕΦΩΝΟ": "2410555666",
+        "ΕΠΩΝΥΜΙΑ_ΠΕΛΑΤΗ": "Demo customer 3 (synthetic)",
+        "EMAIL": "orders@customer3.test",
+        "ΤΗΛΕΦΩΝΟ": "",
         "ΚΑΤΑΣΤΑΣΗ": "ΕΝΕΡΓΟΣ"
     },
     {
         "ΚΩΔΙΚΟΣ_ΠΕΛΑΤΗ": "CUST-9999",
-        "ΕΠΩΝΥΜΙΑ_ΠΕΛΑΤΗ": "Παντοπωλείο Η Γωνιά",
-        "EMAIL": "gonia@fakemail.test",
-        "ΤΗΛΕΦΩΝΟ": "2810112233",
+        "ΕΠΩΝΥΜΙΑ_ΠΕΛΑΤΗ": "Demo customer 4 (synthetic)",
+        "EMAIL": "orders@customer4.test",
+        "ΤΗΛΕΦΩΝΟ": "",
         "ΚΑΤΑΣΤΑΣΗ": "ΕΝΕΡΓΟΣ"
     }
 ]

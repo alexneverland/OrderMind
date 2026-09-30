@@ -166,7 +166,7 @@ def test_api_manual_creation_and_duplicate_rejection(client):
         "company_id": comp_id,
         "customer_code": "CUST-MANUAL-1",
         "customer_name": "Manual Customer S.A.",
-        "email": "manual@test.local"
+        "email": "manual@customer.test"
     })
     assert cust_res.status_code == 201
 
@@ -194,4 +194,3 @@ def test_api_manual_creation_and_duplicate_rejection(client):
         "description": "Second Product Description"
     })
     assert dup_prod_res.status_code == 400
-

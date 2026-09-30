@@ -41,8 +41,8 @@ def setup_hardening_data(db_session: Session):
         company_id=company.id,
         customer_code="CUST-HARDEN-1",
         customer_name="Taverna Acropolis",
-        email="info@acropolis.gr",
-        phone="+302101234567"
+        email="info@demo-taverna.test",
+        phone="0000000000"
     )
     db_session.add(customer)
     db_session.flush()

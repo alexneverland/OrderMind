@@ -39,8 +39,8 @@ def setup_export_data(db_session: Session, empty_master_fields: bool = False):
         company_id=company.id,
         customer_code="CUST-100",
         customer_name="Grand Hotel Athens",
-        email="orders@grandhotel.gr",
-        phone=None if empty_master_fields else "2100000000"
+        email="orders@demo-hotel.test",
+        phone=None if empty_master_fields else "0000000000"
     )
     prod1 = Product(
         company_id=company.id,
