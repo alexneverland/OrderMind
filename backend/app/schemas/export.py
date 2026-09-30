@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field, ConfigDict, field_validator
-from typing import List, Optional
+from typing import List, Literal, Optional
 from datetime import datetime
 from enum import Enum
 from backend.app.schemas.pallet import PalletConfig
@@ -42,7 +42,7 @@ class ExportProfileCreate(BaseModel):
     company_id: int
     name: str = Field(..., min_length=1, description="Friendly profile name e.g. SoftOne ERP, Warehouse Excel")
     format: str = Field(default="xlsx", description="xlsx, excel, csv, or json")
-    delimiter: str = Field(default=",", min_length=1, max_length=1, description="Single-character delimiter for CSV format")
+    delimiter: Literal[",", ";", "\t", "|"] = Field(default=",", description="Delimiter for CSV format")
     include_header: bool = Field(default=True, description="Whether to write header row in Excel/CSV")
     encoding: str = Field(default="utf-8-sig", description="Encoding for CSV: utf-8, utf-8-sig")
     mappings: List[ExportFieldMappingCreate] = Field(default_factory=list, description="List of column mappings; empty for the fixed four-column order sheet")
@@ -56,7 +56,7 @@ class ExportProfileCreate(BaseModel):
 class ExportProfileUpdate(BaseModel):
     name: Optional[str] = None
     format: Optional[str] = None
-    delimiter: Optional[str] = Field(default=None, min_length=1, max_length=1)
+    delimiter: Optional[Literal[",", ";", "\t", "|"]] = None
     include_header: Optional[bool] = None
     encoding: Optional[str] = None
     mappings: Optional[List[ExportFieldMappingCreate]] = None

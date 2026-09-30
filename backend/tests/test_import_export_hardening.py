@@ -29,7 +29,7 @@ def workbook(headers, values):
     return output.getvalue()
 
 
-@pytest.mark.parametrize("value", ["", ";;", "\t\t"])
+@pytest.mark.parametrize("value", ["", ";;", "\t\t", ":", "^"])
 def test_delimiters_rejected_before_create_and_update(value):
     with pytest.raises(ValidationError):
         ExportProfileCreate(company_id=1, name="Synthetic", delimiter=value)
