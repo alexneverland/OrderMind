@@ -232,6 +232,8 @@ class ExportEngine:
         elif fmt == "csv":
             out = io.StringIO()
             delim = profile.delimiter or ","
+            if delim not in {",", ";", "\t", "|"}:
+                raise OrderExportError("CSV profile has an invalid delimiter; update the profile before exporting")
             writer = csv.writer(out, delimiter=delim, quoting=csv.QUOTE_MINIMAL)
 
             if profile.include_header:

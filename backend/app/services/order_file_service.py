@@ -5,6 +5,7 @@ from io import BytesIO
 from pathlib import Path
 
 from backend.app.config import settings
+from backend.app.core.office_archive import validate_office_archive, OfficeArchiveError
 from backend.app.ai.prompt_boundaries import OCR_SYSTEM_PROMPT
 
 
@@ -35,6 +36,7 @@ def _plain_text(content: bytes) -> str:
 
 
 def _spreadsheet(content: bytes) -> str:
+    validate_office_archive(content)
     from openpyxl import load_workbook
 
     workbook = load_workbook(BytesIO(content), read_only=True, data_only=True)
@@ -65,6 +67,7 @@ def _spreadsheet(content: bytes) -> str:
 
 
 def _document(content: bytes) -> str:
+    validate_office_archive(content)
     from docx import Document
 
     document = Document(BytesIO(content))
@@ -154,5 +157,7 @@ async def extract_order_file(filename: str, content: bytes) -> tuple[str, str]:
         return await _transcribe(content, IMAGE_MIME[extension]), "ocr"
     except OrderFileError:
         raise
+    except OfficeArchiveError as exc:
+        raise OrderFileError(str(exc)) from exc
     except Exception as exc:
         raise OrderFileError("Could not read this order file; check that it is valid and unprotected") from exc

@@ -1,5 +1,6 @@
 import io
 import math
+import zipfile
 from decimal import Decimal, InvalidOperation
 from typing import Dict, List, Any, Optional
 import pandas as pd
@@ -7,6 +8,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select
 
 from backend.app.core.text_normalizer import normalize_text
+from backend.app.core.office_archive import validate_office_archive
 from backend.app.models.customer import Customer
 from backend.app.models.product import Product, Packaging
 from backend.app.schemas.imports import (
@@ -137,6 +139,8 @@ class MasterDataService:
     @staticmethod
     def read_excel_dataframe(file_bytes: bytes) -> pd.DataFrame:
         """Reads Excel file into a DataFrame, handling various sheet formats."""
+        if file_bytes.startswith(b"PK") or zipfile.is_zipfile(io.BytesIO(file_bytes)):
+            validate_office_archive(file_bytes)
         try:
             df = pd.read_excel(io.BytesIO(file_bytes), engine="openpyxl", dtype=str)
         except Exception:
@@ -227,6 +231,7 @@ class MasterDataService:
         error_details: List[RowErrorDetail] = []
 
         # Pre-fetch existing customer codes for this company to prevent duplicates
+        db.connection().exec_driver_sql("BEGIN IMMEDIATE")
         existing_codes_query = select(Customer.customer_code).where(Customer.company_id == company_id)
         existing_codes = set(db.execute(existing_codes_query).scalars().all())
 
@@ -336,6 +341,7 @@ class MasterDataService:
         error_details: List[RowErrorDetail] = []
 
         # Pre-fetch existing product SKUs for this company
+        db.connection().exec_driver_sql("BEGIN IMMEDIATE")
         existing_skus_query = select(Product.sku).where(Product.company_id == company_id)
         existing_skus = set(db.execute(existing_skus_query).scalars().all())
         existing_products = {p.sku: p for p in db.execute(select(Product).where(Product.company_id == company_id)).scalars()}

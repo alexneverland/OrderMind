@@ -1,7 +1,7 @@
 import json
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import OperationalError, IntegrityError
 from typing import Dict, Any
 
 from backend.app.core.database import get_db
@@ -91,6 +91,9 @@ async def import_customers_endpoint(
         return summary
     except ValueError as ve:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Catalog changed during import; reload and retry") from None
     except OperationalError:
         raise
     except Exception:
@@ -130,6 +133,9 @@ async def import_products_endpoint(
         return summary
     except ValueError as ve:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Catalog changed during import; reload and retry") from None
     except OperationalError:
         raise
     except Exception:
@@ -169,6 +175,9 @@ async def import_packaging_endpoint(
         return summary
     except ValueError as ve:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Catalog changed during import; reload and retry") from None
     except OperationalError:
         raise
     except Exception:

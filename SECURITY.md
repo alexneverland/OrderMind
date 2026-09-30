@@ -18,6 +18,8 @@ The offline mock provider does not call an AI service. Selecting Gemini, OpenAI,
 
 Uploaded binaries are converted to editable text and are not retained by OrderMind. Submitted text, order lines, corrections, and approved snapshots remain in SQLite. Protect database backups and exports as business data. For a live SQLite backup, use the backup API or `VACUUM INTO` instead of copying a database file during writes.
 
+ZIP-based DOCX/XLSX inputs, including master-data Excel imports, are checked before document/DataFrame parsing. Archives are limited to 30 MiB of expanded content and 1,000 entries; contents are streamed for integrity validation. These bounds reduce decompression risk but do not guarantee a fixed parser memory budget or execution time, and do not apply to PDF/image decoding.
+
 Report a suspected vulnerability through the repository's **Security → Report a vulnerability** option if enabled. If private reporting is unavailable, contact the repository owner privately before sending details. Do not put credentials, personal data, customer records, or exploitable details in a public issue.
 
 There is no security support commitment for older releases. Reproduce reports against the current `main` and include versions and a synthetic reproduction. Never send a live database or a usable API key.

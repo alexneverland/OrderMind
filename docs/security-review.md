@@ -40,3 +40,9 @@ Final verification: 251 backend tests and 36 frontend tests passed. The 43 new b
 - The published `v0.1.0` source is unchanged; these fixes need review and a subsequent release.
 
 Design reference: [OWASP LLM Prompt Injection Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/LLM_Prompt_Injection_Prevention_Cheat_Sheet.html), particularly task/data separation, output validation, least privilege and human approval.
+
+## Import/export follow-up
+
+- CSV profiles were already checked against an allowed delimiter set on creation. The remaining path was a legacy/non-CSV profile with an invalid delimiter changed to CSV without a delimiter update. Create/update schemas now require one character, format changes validate the effective stored delimiter, and export rejects invalid legacy values with a controlled business error. An empty legacy delimiter continues to fall back to comma.
+- Customer/product imports now acquire `BEGIN IMMEDIATE` after reading the workbook and before looking up existing codes, matching the packaging-import strategy. Two concurrent imports on a disposable WAL database verify that the second observes the first commit and reports a duplicate rather than failing on uniqueness. Import endpoints also roll back remaining integrity conflicts and return HTTP 409. Existing SQLite busy errors remain retryable HTTP 503.
+- A shared pre-parser guard bounds DOCX/XLSX archives, including master-data preview/import, to 30 MiB expanded bytes and 1,000 entries and streams contents to check integrity. Tests reject highly compressed oversized content before entering document or DataFrame parsers. This is a targeted ZIP defense, not a full PDF/image/XML resource-exhaustion guarantee.
