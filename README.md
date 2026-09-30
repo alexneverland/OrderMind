@@ -4,6 +4,12 @@ OrderMind is a local B2B order intake and review workspace built with FastAPI, R
 
 The operator UI runs at `http://127.0.0.1:8001/` after a frontend build. API docs remain at `http://127.0.0.1:8001/docs`.
 
+## Workspace preview
+
+![OrderMind dashboard showing pending and approved orders for a synthetic demo company](docs/images/dashboard.jpg)
+
+**Intake → catalog matching → operator review → approval → export.** Browse the [screenshots and workflow walkthrough](docs/screenshots.md) for order review, Excel catalog import, company rules, and pallet planning. All screenshots use synthetic demo data.
+
 ## Current scope
 
 - Pasted-text or file order input (TXT, CSV, XLSX, DOCX, PDF, JPG, PNG, WebP); mock order extraction works offline for readable text. Gemini, OpenAI, Claude and Vertex can be selected for text extraction and OCR.
