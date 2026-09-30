@@ -5,6 +5,7 @@ from io import BytesIO
 from pathlib import Path
 
 from backend.app.config import settings
+from backend.app.ai.prompt_boundaries import OCR_SYSTEM_PROMPT
 
 
 SUPPORTED_EXTENSIONS = {".txt", ".csv", ".xlsx", ".docx", ".pdf", ".png", ".jpg", ".jpeg", ".webp"}
@@ -109,7 +110,7 @@ async def _transcribe(content: bytes, mime_type: str) -> str:
                     response = await client.aio.models.generate_content(
                         model=provider.model_name,
                         contents=[OCR_PROMPT, types.Part.from_bytes(data=content, mime_type=mime_type)],
-                        config=types.GenerateContentConfig(temperature=0),
+                        config=types.GenerateContentConfig(temperature=0, system_instruction=OCR_SYSTEM_PROMPT),
                     )
                     return _bounded_text(response.text or "")
                 except Exception as exc:

@@ -380,8 +380,10 @@ async def create_order_from_match_endpoint(
                 if item.line_number in seen_line_numbers:
                     raise ValueError(f"Duplicate line number {item.line_number}")
                 seen_line_numbers.add(item.line_number)
-                if normalize_text(item.original_text) not in normalize_text(raw_input):
+                if not normalize_text(item.original_text) or normalize_text(item.original_text) not in normalize_text(raw_input):
                     raise ValueError(f"Line {item.line_number} is not present in raw order text")
+                if normalize_text(item.product_phrase) not in normalize_text(item.original_text):
+                    raise ValueError(f"Line {item.line_number} product phrase is not grounded in its order item")
                 validate_order_quantity_policy(effective_business_settings(db, payload.company_id), item.quantity_text, item.bonus_quantity)
                 if not is_quantity_grounded_in_span(
                     item.quantity, item.original_text, raw_input, item.product_phrase,

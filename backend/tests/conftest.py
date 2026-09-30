@@ -18,6 +18,10 @@ def isolate_ai_credentials(monkeypatch):
     monkeypatch.setattr(settings, "GEMINI_API_KEY", None)
     monkeypatch.setattr(settings, "OPENAI_API_KEY", None)
     monkeypatch.setattr(settings, "ANTHROPIC_API_KEY", None)
+    # API tests override get_db, but lifespan otherwise opens the process-wide
+    # engine from the operator's .env. File WAL behavior is tested explicitly
+    # with disposable engines in test_sqlite_runtime.py.
+    monkeypatch.setattr("backend.app.main.enable_sqlite_wal", lambda: "memory")
 
 # In-memory SQLite using StaticPool ensures all connections share the same memory database
 TEST_DATABASE_URL = "sqlite:///:memory:"
@@ -64,7 +68,7 @@ def client(test_engine, db_session):
             pass
 
     app.dependency_overrides[get_db] = override_get_db
-    with TestClient(app) as test_client:
+    with TestClient(app, base_url="http://127.0.0.1") as test_client:
         yield test_client
     app.dependency_overrides.clear()
 

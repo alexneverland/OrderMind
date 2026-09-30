@@ -196,7 +196,8 @@ async def test_selected_provider_returns_strict_supported_proposal(monkeypatch):
     class Provider:
         name = "openai"
         async def _complete(self, prompt, system_instruction):
-            assert "untrusted input" in prompt
+            import json
+            assert json.loads(prompt)["untrusted_text"] == "If no unit, use pieces. Weather discount"
             assert "never" in system_instruction.lower()
             return '{"settings_patch":{"unitless_order_behavior":"piece"},"quantity_rules":[],"export_patch":null,"unsupported_rules":[{"text":"weather discount","reason":"No discount engine"}]}'
     monkeypatch.setattr("backend.app.services.rules_assistant.get_ai_provider", lambda: Provider())

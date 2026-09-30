@@ -2,7 +2,8 @@ import json
 import logging
 import asyncio
 from typing import List, Optional, Dict, Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+from backend.app.ai.prompt_boundaries import UNTRUSTED_CONTENT_POLICY, extraction_policy, untrusted_text_payload
 
 from backend.app.ai.base import BaseAIProvider
 from backend.app.config import settings
@@ -14,15 +15,26 @@ logger = logging.getLogger(__name__)
 
 
 class GeminiExtractedItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     original_text: str = Field(description="Verbatim line or phrase from the raw input")
     product_phrase: str = Field(description="Requested product description without quantities or units")
-    quantity: float = Field(description="Requested quantity, must be positive number")
+    quantity: float = Field(ge=0, allow_inf_nan=False, description="Requested quantity, must be positive number")
     unit: Optional[str] = Field(default=None, description="Verbatim packaging or measurement unit if mentioned, or null if none mentioned")
     quantity_text: str = Field(description="Exact quantity expression, including its unit, as written by customer")
-    bonus_quantity: float = Field(default=0, ge=0, description="Free quantity; a bare free number shares the explicit unit of its paid quantity")
+    bonus_quantity: float = Field(default=0, ge=0, allow_inf_nan=False, description="Free quantity; a bare free number shares the explicit unit of its paid quantity")
+
+    @field_validator("quantity")
+    @classmethod
+    def positive_quantity(cls, value: float) -> float:
+        # Gemini's response Schema does not support exclusiveMinimum. Keep the
+        # strict positive check server-side rather than breaking SDK conversion.
+        if value <= 0:
+            raise ValueError("Requested quantity must be positive")
+        return value
 
 
 class GeminiExtractionResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     items: List[GeminiExtractedItem] = Field(default_factory=list)
 
 
@@ -38,7 +50,7 @@ ABSOLUTE BOUNDARIES AND CONSTRAINTS:
 6. Grounding: The original_text must be the exact verbatim snippet from the customer input.
 7. Read each layout semantically: columns may vary, unrelated columns or headings may intervene, and one physical row can contain multiple products. Return one item per requested product. Include an exact quantity_text substring for each item. Preserve an explicitly requested free quantity separately. A bare free number shares the explicit unit of its paid quantity. Never infer bonus meaning from a plus sign unless the supplied company policy enables it. If two quantities explicitly use different units, preserve both unit tokens in quantity_text.
 8. A product description or an M.M column can mention kilos or other units; that is product metadata. Set the order unit only from the quantity expression. If no order unit is explicitly stated, return null for unit; company policy will resolve it later. If the quantity explicitly says kilos or cases, return that unit exactly.
-"""
+""" + "\n" + UNTRUSTED_CONTENT_POLICY
 
 
 class GeminiProvider(BaseAIProvider):
@@ -72,10 +84,8 @@ class GeminiProvider(BaseAIProvider):
         from google.genai import types
 
         bonus_mode = (context or {}).get("bonus_expression_mode", "disabled")
-        policy = ("For this company, a paid+free expression such as 10+1 means 10 paid and 1 free."
-                  if bonus_mode == "paid_plus_bonus" else
-                  "For this company, a plus sign alone is not evidence of free goods; preserve the phrase without guessing.")
-        user_content = f"{policy}\nExtract items from this customer order:\n\"\"\"\n{normalized_input.raw_text}\n\"\"\""
+        policy = extraction_policy(bonus_mode)
+        user_content = untrusted_text_payload(normalized_input.raw_text)
 
         max_retries = 3
         last_error = None
@@ -87,7 +97,7 @@ class GeminiProvider(BaseAIProvider):
                     model=self.model_name,
                     contents=user_content,
                     config=types.GenerateContentConfig(
-                        system_instruction=EXTRACTION_SYSTEM_PROMPT,
+                        system_instruction=EXTRACTION_SYSTEM_PROMPT + "\n" + policy,
                         response_mime_type="application/json",
                         response_schema=GeminiExtractionResponse,
                         temperature=0.0,

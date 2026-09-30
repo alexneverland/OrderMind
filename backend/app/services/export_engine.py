@@ -68,7 +68,7 @@ def expand_order_sheet_item(item: dict, profile_policy: dict, business_policy: d
     if gift:
         if not profile_policy["bonus_separate_row"]:
             raise OrderExportError(f"Line {line_number}: profile does not define how to export bonus goods")
-        rows.append([sku, description, profile_policy["bonus_marker"], gift])
+        rows.append([sku, description, sanitize_formula_injection(profile_policy["bonus_marker"]), gift])
     return rows
 
 
