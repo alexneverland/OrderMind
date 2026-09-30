@@ -6,7 +6,7 @@ from threading import Event, Thread, current_thread
 import openpyxl
 import pytest
 from pydantic import ValidationError
-from sqlalchemy import create_engine, event, select
+from sqlalchemy import create_engine, event, select, text
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import NullPool
 
@@ -173,3 +173,56 @@ def test_import_integrity_conflict_rolls_back_and_returns_409(client, db_session
                            files={"file": ("synthetic.xlsx", b"synthetic")})
     assert response.status_code == 409
     assert db_session.execute(select(Customer)).scalars().all() == []
+
+
+@pytest.mark.parametrize("entity", ["customers", "products"])
+@pytest.mark.parametrize("valid", [True, False])
+def test_row_preparation_allows_other_sqlite_writers(tmp_path, monkeypatch, entity, valid):
+    engine = create_engine(f"sqlite:///{tmp_path / 'preparation.sqlite'}", poolclass=NullPool,
+                           connect_args={"timeout": 0})
+    Base.metadata.create_all(engine)
+    enable_sqlite_wal(engine)
+    with Session(engine) as setup:
+        company = Company(name="Synthetic preparation tenant")
+        setup.add(company)
+        setup.commit()
+        company_id = company.id
+    frame = MasterDataService.read_excel_dataframe(workbook(["Code", "Name"],
+                                                          ["SAME", "Synthetic" if valid else None]))
+    source_rows = frame.iterrows
+    peer_writes = []
+
+    def peer_write():
+        # A separate writer must succeed both before and after row preparation,
+        # without relying on timing or waiting through a busy timeout.
+        with engine.begin() as connection:
+            connection.execute(text("UPDATE companies SET name = :name WHERE id = :id"),
+                               {"name": "Synthetic peer update", "id": company_id})
+        peer_writes.append(True)
+
+    def preparing_rows():
+        peer_write()
+        yield from source_rows()
+        peer_write()
+
+    monkeypatch.setattr(frame, "iterrows", preparing_rows)
+    monkeypatch.setattr(MasterDataService, "read_excel_dataframe", staticmethod(lambda _: frame))
+    reservations = []
+
+    @event.listens_for(engine, "before_cursor_execute")
+    def track_reservations(connection, cursor, statement, parameters, context, executemany):
+        if statement == "BEGIN IMMEDIATE":
+            reservations.append(True)
+
+    mapping = ({"customer_code": "Code", "customer_name": "Name"} if entity == "customers"
+               else {"sku": "Code", "description": "Name"})
+    try:
+        with Session(engine) as session:
+            assert session.get(Company, company_id) is not None
+            result = getattr(MasterDataService, f"import_{entity}")(session, company_id, b"", mapping)
+            assert result.imported == int(valid)
+            assert result.errors == int(not valid)
+        assert len(peer_writes) == 2
+        assert len(reservations) == int(valid)
+    finally:
+        engine.dispose()
