@@ -49,6 +49,14 @@ export type OrderLine = {
   unit_explicit?: boolean;
   quantity_text?: string | null;
   bonus_quantity?: number;
+  calculated_bonus_quantity?: number;
+  promotion_result?: {
+    applied_rule_id: number | null;
+    calculated_bonus_quantity: number;
+    explanation: string;
+    requires_review: boolean;
+    matching_rule_ids: number[];
+  } | null;
   final_bonus_quantity?: number | null;
   matched_product_id: number | null;
   matched_product: ProductBrief | null;

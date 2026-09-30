@@ -8,6 +8,7 @@ import {
 import { useCompany } from "../components/AppShell";
 import { getBusinessSettings, saveBusinessSettings, type BusinessSettings } from "../api/businessSettings";
 import { Alert, Spinner } from "../components/ui";
+import { CompanyRulesWorkspace } from "../components/CompanyRulesWorkspace";
 
 export function SettingsPage() {
   const { companies, companyId } = useCompany();
@@ -15,6 +16,7 @@ export function SettingsPage() {
   const [businessError, setBusinessError] = useState("");
   const [businessBusy, setBusinessBusy] = useState(false);
   const [businessSaved, setBusinessSaved] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   useEffect(() => {
     let active = true;
     setBusiness(null);
@@ -199,11 +201,15 @@ export function SettingsPage() {
         <p>These rules apply only to: <strong>{companies.find((c) => c.id === companyId)?.name || "Select a company"}</strong>.</p>
         <Alert message={businessError} />
         {companyId && !business && !businessError && <Spinner />}
+        {business && business.company_id === companyId && <CompanyRulesWorkspace
+          key={companyId} companyId={companyId} business={business} onBusinessChanged={setBusiness}
+          onEditSettings={() => setAdvancedOpen(true)} />}
         {business && business.company_id === companyId && (
+          <details className="line-details" open={advancedOpen} onToggle={(event) => setAdvancedOpen(event.currentTarget.open)}><summary>Advanced settings</summary>
           <form className="stack-form" onSubmit={(e) => void saveBusiness(e)}>
             <label className="check-row"><input type="checkbox" checked={business.bonus_enabled}
               onChange={(e) => setBusiness({ ...business, bonus_enabled: e.target.checked,
-                bonus_expression_mode: e.target.checked ? "explicit_only" : "disabled" })} /> Enable paid and bonus quantities</label>
+                bonus_expression_mode: e.target.checked ? "explicit_only" : "disabled" })} /> Allow customer-stated free quantities</label>
             <label>Promotion syntax
               <select value={business.bonus_expression_mode} disabled={!business.bonus_enabled}
                 onChange={(e) => setBusiness({ ...business, bonus_expression_mode: e.target.value as BusinessSettings["bonus_expression_mode"] })}>
@@ -230,6 +236,7 @@ export function SettingsPage() {
             <button className="button primary" disabled={businessBusy}>{businessBusy ? <Spinner /> : "Save company rules"}</button>
             {businessSaved && <p role="status">Company rules saved.</p>}
           </form>
+          </details>
         )}
       </section>
       <section className="panel padded setup-panel">

@@ -191,8 +191,15 @@ function LineCard({
     String(line.final_quantity ?? line.requested_quantity),
   );
   const [unit, setUnit] = useState(line.final_unit ?? (line.requested_unit === "unknown" ? "unknown" : line.requested_unit));
-  const [bonusQuantity, setBonusQuantity] = useState(String(line.final_bonus_quantity ?? line.bonus_quantity ?? 0));
+  const [bonusQuantity, setBonusQuantity] = useState(String(line.final_bonus_quantity ?? (line.bonus_quantity || line.calculated_bonus_quantity || 0)));
+  const [bonusEdited, setBonusEdited] = useState(false);
   const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    setQuantity(String(line.final_quantity ?? line.requested_quantity));
+    setUnit(line.final_unit ?? (line.requested_unit === "unknown" ? "unknown" : line.requested_unit));
+    setBonusQuantity(String(line.final_bonus_quantity ?? (line.bonus_quantity || line.calculated_bonus_quantity || 0)));
+    setBonusEdited(false);
+  }, [line]);
   const editable = order.status === "pending_review";
   const act = async (action: () => Promise<unknown>) => {
     setBusy(true);
@@ -210,11 +217,11 @@ function LineCard({
   };
   const finalQuantity = line.final_quantity ?? line.requested_quantity;
   const finalUnit = line.final_unit ?? line.requested_unit;
-  const finalBonusQuantity = line.final_bonus_quantity ?? line.bonus_quantity ?? 0;
+  const finalBonusQuantity = line.final_bonus_quantity ?? (line.bonus_quantity || line.calculated_bonus_quantity || 0);
   const changed =
     finalQuantity !== line.requested_quantity ||
     (finalUnit !== null && finalUnit !== line.requested_unit) ||
-    finalBonusQuantity !== (line.bonus_quantity ?? 0);
+    finalBonusQuantity !== (line.bonus_quantity || line.calculated_bonus_quantity || 0);
   return (
     <article className="line-card">
       <div className="line-top">
@@ -249,6 +256,12 @@ function LineCard({
           </strong>
           {!!line.bonus_quantity && <small> + {line.bonus_quantity} δώρο</small>}
         </div>
+        {line.promotion_result && <div>
+          <span className="field-label">Promotion</span>
+          <strong>+{line.calculated_bonus_quantity || 0} {finalUnit} free</strong>
+          <small>{line.promotion_result.explanation}</small>
+          {line.promotion_result.requires_review && <small>Review required: choose the final free quantity.</small>}
+        </div>}
         <div>
           <span className="field-label">
             Final {changed && <em>changed</em>}
@@ -335,8 +348,10 @@ function LineCard({
           className="inline-edit"
           onSubmit={(e) => {
             e.preventDefault();
+            const basisChanged = Number(quantity) !== finalQuantity || unit !== finalUnit;
+            const operatorChoseBonus = bonusEdited || (!basisChanged && line.promotion_result?.requires_review && line.final_bonus_quantity == null);
             void act(() =>
-              updateFinalValues(order.id, line.id, Number(quantity), unit, Number(bonusQuantity)),
+              updateFinalValues(order.id, line.id, Number(quantity), unit, operatorChoseBonus ? Number(bonusQuantity) : undefined),
             ).then((success) => {
               if (success) setEditing(false);
             });
@@ -367,7 +382,7 @@ function LineCard({
           <label>
             Ποσότητα δώρου
             <input type="number" min="0" step="any" value={bonusQuantity}
-              onChange={(e) => setBonusQuantity(e.target.value)} required />
+              onChange={(e) => { setBonusQuantity(e.target.value); setBonusEdited(true); }} required />
           </label>
           <button
             className="button primary"

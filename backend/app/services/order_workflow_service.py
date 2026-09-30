@@ -2,6 +2,7 @@ from typing import Optional, List, Tuple
 from datetime import datetime, timezone
 import uuid
 import math
+import json
 from sqlalchemy.orm import Session
 from sqlalchemy import select, func
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -13,6 +14,7 @@ from backend.app.models.product import Product
 from backend.app.models.export import ExportProfile
 from backend.app.models.memory import HumanCorrection, CompanyProductUnitPreference
 from backend.app.services.business_settings_service import effective_business_settings, validate_order_quantity_policy
+from backend.app.services.company_rule_service import evaluate_quantity_bonus, effective_bonus
 from backend.app.schemas.workflow import (
     OrderStatus,
     OrderLineStatus,
@@ -45,6 +47,33 @@ class OrderWorkflowService:
         OrderStatus.EXPORTED.value: set(),
         OrderStatus.CANCELLED.value: set(),
     }
+
+    @staticmethod
+    def _promotion_basis(result: dict | None) -> str:
+        if result is None:
+            return "null"
+        return json.dumps({
+            key: result.get(key) for key in (
+                "applied_rule_id", "matching_rule_ids", "calculated_bonus_quantity",
+                "requires_review", "rule_configuration",
+            )
+        }, sort_keys=True, separators=(",", ":"))
+
+    @staticmethod
+    def _refresh_promotion(db: Session, order: Order, line: OrderLine, input_changed: bool = False) -> None:
+        previous_basis = OrderWorkflowService._promotion_basis(line.promotion_result)
+        result = evaluate_quantity_bonus(
+            db, order.company_id, order.customer_id, line.matched_product_id,
+            line.final_quantity if line.final_quantity is not None else line.requested_quantity,
+            line.final_unit or line.requested_unit, line.bonus_quantity,
+        )
+        line.promotion_result = result
+        line.calculated_bonus_quantity = result["calculated_bonus_quantity"] if result else 0.0
+        if (previous_basis != OrderWorkflowService._promotion_basis(result)
+                or input_changed and (line.promotion_result is not None or previous_basis != "null")):
+            line.final_bonus_quantity = None
+        if result and result["requires_review"] and line.final_bonus_quantity is None:
+            line.status = OrderLineStatus.NEEDS_REVIEW.value
 
     @classmethod
     def create_order_from_match(
@@ -139,6 +168,7 @@ class OrderWorkflowService:
                 )
                 db.add(order_line)
                 db.flush()
+                cls._refresh_promotion(db, order, order_line)
 
                 # Persist match candidates for explainability and operator audit
                 persisted_product_ids = set()
@@ -304,6 +334,8 @@ class OrderWorkflowService:
             # Update line values
             order_line.matched_product_id = correct_product_id
             order_line.final_sku = correct_prod.sku
+            if previous_suggested_id != correct_product_id:
+                order_line.final_bonus_quantity = None
             requested_final_unit = order_line.final_unit or order_line.requested_unit
             compatible, package_id, _ = resolve_product_packaging(correct_prod, requested_final_unit)
             order_line.final_unit = requested_final_unit
@@ -312,6 +344,7 @@ class OrderWorkflowService:
                 OrderLineStatus.CORRECTED.value if compatible
                 else OrderLineStatus.NEEDS_REVIEW.value
             )
+            cls._refresh_promotion(db, order, order_line)
 
             # Record correction and update learning memory without committing in sub-service
             correction, _ = LearningMemoryService.correct_match(
@@ -365,15 +398,13 @@ class OrderWorkflowService:
 
         try:
             order.version += 1
+            previous_quantity = order_line.final_quantity if order_line.final_quantity is not None else order_line.requested_quantity
+            previous_unit = order_line.final_unit or order_line.requested_unit
+            previous_status = order_line.status
             if final_quantity is not None:
                 if not math.isfinite(final_quantity) or final_quantity <= 0:
                     raise ValueError("Quantity must be greater than zero")
                 order_line.final_quantity = final_quantity
-
-            if final_bonus_quantity is not None:
-                if not math.isfinite(final_bonus_quantity) or final_bonus_quantity < 0:
-                    raise ValueError("Bonus quantity must be zero or greater")
-                order_line.final_bonus_quantity = final_bonus_quantity
 
             if final_unit is not None:
                 canonical_unit, raw_unit, _ = resolve_unit(final_unit)
@@ -401,6 +432,25 @@ class OrderWorkflowService:
                         index_elements=["company_id", "product_id"],
                         set_={"unit": canonical_unit, "updated_at": func.now()},
                     ))
+
+            if final_quantity is not None or final_unit is not None:
+                cls._refresh_promotion(
+                    db, order, order_line,
+                    input_changed=(
+                        previous_quantity != (order_line.final_quantity if order_line.final_quantity is not None else order_line.requested_quantity)
+                        or previous_unit != (order_line.final_unit or order_line.requested_unit)
+                    ),
+                )
+
+            if final_bonus_quantity is not None:
+                if not math.isfinite(final_bonus_quantity) or final_bonus_quantity < 0:
+                    raise ValueError("Bonus quantity must be zero or greater")
+                order_line.final_bonus_quantity = final_bonus_quantity
+                if (previous_status in {
+                    OrderLineStatus.AUTO_ACCEPTED.value, OrderLineStatus.CONFIRMED.value,
+                    OrderLineStatus.CORRECTED.value,
+                } and order_line.promotion_result and order_line.promotion_result["requires_review"]):
+                    order_line.status = previous_status
 
             db.commit()
             db.refresh(order_line)
@@ -450,6 +500,15 @@ class OrderWorkflowService:
         business_settings = effective_business_settings(db, order.company_id)
 
         for line in order.lines:
+            current_promotion = evaluate_quantity_bonus(
+                db, order.company_id, order.customer_id, line.matched_product_id,
+                line.final_quantity if line.final_quantity is not None else line.requested_quantity,
+                line.final_unit or line.requested_unit, line.bonus_quantity,
+            )
+            if cls._promotion_basis(line.promotion_result) != cls._promotion_basis(current_promotion):
+                raise OrderApprovalError(
+                    f"Order line {line.line_number} has changed promotion rules; reload and review the line."
+                )
             if line.status not in allowed_line_statuses:
                 raise OrderApprovalError(
                     f"Order cannot be approved because line {line.line_number} is in '{line.status}' status (must be auto_accepted, confirmed, or corrected)."
@@ -476,11 +535,13 @@ class OrderWorkflowService:
                 raise OrderApprovalError(
                     f"Order line {line.line_number} has non-positive quantity."
                 )
-            bonus = line.final_bonus_quantity if line.final_bonus_quantity is not None else line.bonus_quantity
+            if line.promotion_result and line.promotion_result.get("requires_review") and line.final_bonus_quantity is None:
+                raise OrderApprovalError(f"Order line {line.line_number} has a promotion conflict; choose a final free quantity.")
+            bonus = effective_bonus(line)
             if not math.isfinite(bonus) or bonus < 0:
                 raise OrderApprovalError(f"Order line {line.line_number} has an invalid free quantity.")
             try:
-                validate_order_quantity_policy(business_settings, line.quantity_text, bonus)
+                validate_order_quantity_policy(business_settings, line.quantity_text, line.bonus_quantity)
             except ValueError as exc:
                 raise OrderApprovalError(f"Order line {line.line_number}: {exc}") from exc
 
@@ -533,7 +594,11 @@ class OrderWorkflowService:
                         "requested_quantity": l.requested_quantity,
                         "requested_unit": l.requested_unit,
                         "quantity_text": l.quantity_text,
-                        "bonus_quantity": l.final_bonus_quantity if l.final_bonus_quantity is not None else l.bonus_quantity,
+                        "bonus_quantity": effective_bonus(l),
+                        "requested_bonus_quantity": l.bonus_quantity,
+                        "calculated_bonus_quantity": l.calculated_bonus_quantity,
+                        "final_bonus_quantity": l.final_bonus_quantity,
+                        "promotion_result": l.promotion_result,
                         "confidence_score": round(l.confidence_score, 2),
                         "status": l.status,
                         "barcode": (l.matched_product.barcode or "") if l.matched_product else "",

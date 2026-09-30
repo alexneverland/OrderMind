@@ -86,6 +86,8 @@ class OrderLine(Base):
     unit_explicit = Column(Boolean, default=False, nullable=False)
     quantity_text = Column(String(100), nullable=True)
     bonus_quantity = Column(Float, nullable=False, default=0.0, server_default="0")
+    calculated_bonus_quantity = Column(Float, nullable=False, default=0.0, server_default="0")
+    promotion_result = Column(JSON, nullable=True)
     final_bonus_quantity = Column(Float, nullable=True)
     
     # Matching output
