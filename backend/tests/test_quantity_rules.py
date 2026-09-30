@@ -411,6 +411,46 @@ def test_disabling_rule_removes_pending_bonus_before_approval(db_session, client
     assert OrderWorkflowService.approve_order(db_session, order.id).approved_snapshot["lines"][0]["bonus_quantity"] == 0
 
 
+def test_approval_refreshes_legacy_stale_promotion_then_requires_retry(db_session):
+    a, _, ca, _, pa, _ = data(db_session)
+    order = promotion_order(db_session, a, ca, pa)
+    line = order.lines[0]
+    assert line.promotion_result is None
+    # Simulate a pending order saved before the promotion existed.
+    rule = create_rule(db_session, a.id, RuleWrite(product_id=pa.id, configuration=config()))
+    db_session.commit()
+    with pytest.raises(OrderApprovalError, match="recalculated"):
+        OrderWorkflowService.approve_order(db_session, order.id)
+    db_session.refresh(line)
+    db_session.refresh(order)
+    assert order.status == "pending_review"
+    assert order.approved_snapshot is None
+    assert (line.promotion_result["applied_rule_id"], line.calculated_bonus_quantity) == (rule.id, 2)
+    assert line.bonus_quantity == 0
+    approved = OrderWorkflowService.approve_order(db_session, order.id)
+    assert approved.approved_snapshot["lines"][0]["bonus_quantity"] == 2
+
+
+def test_approval_refreshes_conflict_without_approving_or_preserving_override(db_session):
+    a, _, ca, _, pa, _ = data(db_session)
+    db_session.add(CompanyBusinessSettings(company_id=a.id, bonus_enabled=True, bonus_expression_mode="paid_plus_bonus"))
+    db_session.commit()
+    order = promotion_order(db_session, a, ca, pa, bonus=3)
+    line = order.lines[0]
+    OrderWorkflowService.update_line_final_values(db_session, order.id, line.id, final_bonus_quantity=3)
+    create_rule(db_session, a.id, RuleWrite(product_id=pa.id, configuration=config()))
+    db_session.commit()
+    with pytest.raises(OrderApprovalError, match="recalculated"):
+        OrderWorkflowService.approve_order(db_session, order.id)
+    db_session.refresh(line)
+    assert line.promotion_result["requires_review"] is True
+    assert line.status == "needs_review"
+    assert line.bonus_quantity == 3
+    assert line.final_bonus_quantity is None
+    with pytest.raises(OrderApprovalError, match="still require review"):
+        OrderWorkflowService.approve_order(db_session, order.id)
+
+
 def test_new_conflict_requires_review_and_blocks_approval_until_decision(db_session, client):
     a, _, ca, _, pa, _ = data(db_session)
     create_rule(db_session, a.id, RuleWrite(product_id=pa.id, configuration=config(threshold=10)))
