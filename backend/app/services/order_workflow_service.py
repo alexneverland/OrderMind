@@ -568,6 +568,9 @@ class OrderWorkflowService:
             order.confirmed_at = now
 
             customer = order.customer
+            profiles = list(db.execute(
+                select(ExportProfile).where(ExportProfile.company_id == order.company_id)
+            ).scalars())
             order.approved_snapshot = {
                 "business_settings": business_settings.model_dump(exclude={"company_id"}),
                 "export_profiles": {
@@ -580,7 +583,7 @@ class OrderWorkflowService:
                         "include_header": profile.include_header,
                         "palletization": profile.palletization,
                     }
-                    for profile in db.execute(select(ExportProfile).where(ExportProfile.company_id == order.company_id)).scalars()
+                    for profile in profiles
                 },
                 "order": {
                     "id": order.id,
@@ -629,6 +632,28 @@ class OrderWorkflowService:
                     for l in sorted(order.lines, key=lambda x: x.line_number)
                 ]
             }
+
+            # Approval freezes both profile policy and physical weights. Reject a
+            # weight-limited profile before those values become immutable.
+            from backend.app.schemas.pallet import PalletConfig
+            from backend.app.services.pallet_planner import mass_per_unit
+            from backend.app.services.export_engine import OrderExportError
+
+            for profile in profiles:
+                frozen_profile = order.approved_snapshot["export_profiles"][str(profile.id)]
+                if frozen_profile["format"] != "order_sheet":
+                    continue
+                config = PalletConfig.model_validate(frozen_profile["palletization"] or {"enabled": False})
+                if not config.enabled or config.automatic_pallets.max_weight_kg is None:
+                    continue
+                for item in order.approved_snapshot["lines"]:
+                    try:
+                        mass_per_unit(item, weight_required=True)
+                    except OrderExportError as exc:
+                        raise OrderApprovalError(
+                            f"Order cannot be approved for weight-limited profile '{profile.name}': {exc}. "
+                            "Resolve the final unit or add trusted product or packaging weight, then approve again."
+                        ) from exc
 
             db.commit()
             db.refresh(order)

@@ -49,6 +49,7 @@ const baseOrder = (): Order => ({
   exported_at: null,
   last_export_profile_id: null,
   export_records: [],
+  pallet_profile_ids: [],
   lines: [
     {
       id: 7,
@@ -145,6 +146,7 @@ describe("operator review", () => {
   it("shows pallet assignments before export download", async () => {
     current.status = "approved";
     current.approved_at = "2026-09-28T11:00:00";
+    current.pallet_profile_ids = [20];
     mock.getProfiles.mockResolvedValue([{ id: 20, name: "Pallet sheet", format: "order_sheet" }]);
     show();
     await screen.findByRole("option", { name: "Pallet sheet · ORDER_SHEET" });
@@ -153,6 +155,17 @@ describe("operator review", () => {
     expect(await screen.findByRole("region", { name: "Pallet preview" })).toHaveTextContent("7843");
     expect(mock.getPalletPreview).toHaveBeenCalledWith(1, 20);
     expect(mock.exportOrder).not.toHaveBeenCalled();
+  });
+  it("hides pallet preview when the approved snapshot has no pallet policy", async () => {
+    current.status = "approved";
+    current.approved_at = "2026-09-28T11:00:00";
+    current.pallet_profile_ids = [];
+    mock.getProfiles.mockResolvedValue([{ id: 20, name: "Standard sheet", format: "order_sheet" }]);
+    show();
+    await screen.findByRole("option", { name: "Standard sheet · ORDER_SHEET" });
+    fireEvent.change(screen.getByRole("combobox", { name: "Export profile" }), { target: { value: "20" } });
+    expect(screen.queryByRole("button", { name: "Preview pallets" })).not.toBeInTheDocument();
+    expect(mock.getPalletPreview).not.toHaveBeenCalled();
   });
   it("renders verbatim raw input, match and review status", async () => {
     show();

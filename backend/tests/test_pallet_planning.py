@@ -148,7 +148,7 @@ def test_pathological_plan_has_bounded_output():
         plan_pallets([line(1, "BULK", 2001, unit="kg")], config(max_weight_kg=1), POLICY, BUSINESS)
 
 
-def test_approval_freezes_weight_and_policy_and_audits_zip(db_session):
+def test_approval_freezes_weight_and_policy_and_audits_zip(client, db_session):
     company = Company(name="Frozen")
     db_session.add(company); db_session.flush()
     customer = Customer(company_id=company.id, customer_code="C", customer_name="Buyer")
@@ -166,15 +166,18 @@ def test_approval_freezes_weight_and_policy_and_audits_zip(db_session):
         final_sku="A", confidence_score=1, status="confirmed"))
     db_session.commit()
     OrderWorkflowService.approve_order(db_session, order.id)
+    assert client.get(f"/api/v1/orders/{order.id}").json()["pallet_profile_ids"] == [profile.id]
     assert Decimal(order.approved_snapshot["lines"][0]["kg_per_piece"]) == 2
     assert order.approved_snapshot["export_profiles"][str(profile.id)]["palletization"]["enabled"] is True
     product.kg_per_piece = 10
     profile.palletization = {"enabled": False}
     db_session.commit()
+    assert client.get(f"/api/v1/orders/{order.id}").json()["pallet_profile_ids"] == [profile.id]
     content, media, filename = ExportEngine.export_order(db_session, order.id, profile.id)
     assert media == "application/zip" and filename.endswith(".zip")
     with zipfile.ZipFile(io.BytesIO(content)) as zf:
         assert len(zf.namelist()) == 2
+    db_session.refresh(order, ["export_records"])
     assert order.export_records[-1].content_hash
     late = ExportProfileService.create_profile(db_session, ExportProfileCreate(
         company_id=company.id, name="Late pallet", format="order_sheet", palletization=cfg))
@@ -186,6 +189,36 @@ def test_approval_freezes_weight_and_policy_and_audits_zip(db_session):
     db_session.commit()
     with pytest.raises(OrderExportError, match="SKU A.*no frozen trusted"):
         ExportEngine.export_order(db_session, order.id, profile.id)
+
+
+def test_weight_limited_profile_rejects_approval_until_trusted_weight_is_added(client, db_session):
+    company = Company(name="Approval weights")
+    db_session.add(company); db_session.flush()
+    customer = Customer(company_id=company.id, customer_code="C", customer_name="Buyer")
+    product = Product(company_id=company.id, sku="MISSING", description="No weight", unit="piece")
+    db_session.add_all([customer, product]); db_session.flush()
+    profile = ExportProfileService.create_profile(db_session, ExportProfileCreate(
+        company_id=company.id, name="Weight limit", format="order_sheet",
+        palletization=config(max_weight_kg=10)))
+    order = Order(company_id=company.id, customer_id=customer.id, order_number="O-weight", raw_input="1 MISSING", status="pending_review")
+    db_session.add(order); db_session.flush()
+    order.lines.append(OrderLine(company_id=company.id, line_number=1, original_text="1 MISSING", product_phrase="MISSING",
+        requested_quantity=1, requested_unit="piece", final_quantity=1, final_unit="piece", matched_product_id=product.id,
+        final_sku="MISSING", confidence_score=1, status="confirmed"))
+    db_session.commit()
+
+    rejected = client.post(f"/api/v1/orders/{order.id}/approve")
+    assert rejected.status_code == 400
+    assert "Weight limit" in rejected.json()["detail"] and "SKU MISSING" in rejected.json()["detail"]
+    db_session.refresh(order)
+    assert order.status == "pending_review" and order.approved_snapshot is None
+    assert client.get(f"/api/v1/orders/{order.id}").json()["pallet_profile_ids"] == []
+
+    product.kg_per_piece = Decimal("0.75")
+    db_session.commit()
+    OrderWorkflowService.approve_order(db_session, order.id)
+    assert Decimal(order.approved_snapshot["lines"][0]["kg_per_piece"]) == Decimal("0.75")
+    assert client.get(f"/api/v1/orders/{order.id}").json()["pallet_profile_ids"] == [profile.id]
 
 
 def test_ai_pallet_proposal_requires_resolution_and_apply(client, db_session):

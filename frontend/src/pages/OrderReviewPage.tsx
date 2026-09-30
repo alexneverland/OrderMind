@@ -650,7 +650,7 @@ export function OrderReviewPage() {
                 >
                   {busy ? <Spinner /> : "Export & download"}
                 </button>
-                {profiles?.find((p) => p.id === Number(profileId))?.format === "order_sheet" && <button
+                {order.pallet_profile_ids.includes(Number(profileId)) && <button
                   className="button" disabled={busy} onClick={() => {
                     setError("");
                     void getPalletPreview(order.id, Number(profileId)).then(setPalletPreview)

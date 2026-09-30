@@ -493,6 +493,12 @@ def get_order_endpoint(
             detail=f"Order with id {order_id} not found"
         )
     response = OrderResponse.model_validate(order)
+    if order.status in ("approved", "exported") and isinstance(order.approved_snapshot, dict):
+        response.pallet_profile_ids = [
+            int(profile_id)
+            for profile_id, policy in order.approved_snapshot.get("export_profiles", {}).items()
+            if policy.get("format") == "order_sheet" and (policy.get("palletization") or {}).get("enabled")
+        ]
     if profile_id is None:
         return response
     profile = db.get(ExportProfile, profile_id)

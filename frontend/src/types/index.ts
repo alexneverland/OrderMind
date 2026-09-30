@@ -96,6 +96,7 @@ export type Order = {
   exported_at: string | null;
   last_export_profile_id: number | null;
   export_records: ExportRecord[];
+  pallet_profile_ids: number[];
   lines: OrderLine[];
 };
 export type OrderSummary = Pick<
