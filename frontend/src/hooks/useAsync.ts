@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-export function useAsync<T>(load: () => Promise<T>, deps: unknown[]) {
+export function useAsync<T>(load: () => Promise<T>, deps: unknown[], preserveOnRefresh = false) {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
@@ -9,7 +9,7 @@ export function useAsync<T>(load: () => Promise<T>, deps: unknown[]) {
     const current = ++generation.current;
     setLoading(true);
     setError("");
-    setData(null);
+    if (!preserveOnRefresh) setData(null);
     try {
       const value = await load();
       if (current === generation.current) setData(value);

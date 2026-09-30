@@ -531,3 +531,27 @@ def test_duplicate_deterministic_evidence_prevents_silent_auto_accept(db_session
     assert res.best_match is not None
     assert res.confidence.decision == MatchDecision.NEEDS_REVIEW
     assert "Multiple strong product candidates detected; manual review required." in res.confidence.reasons
+
+
+@pytest.mark.parametrize("phrase,correct_description,wrong_description", [
+    ("mortadella farmhouse", "FARM MORTADELLA", "MORTADELLA MINI"),
+    ("smoked american turkey", "TURKEY AMER SMOKED DELI", "SMOKED TURKEY SLICES"),
+])
+def test_fuzzy_match_finds_reordered_abbreviated_description(
+    db_session, phrase, correct_description, wrong_description
+):
+    company = Company(name=f"Catalog {phrase}")
+    db_session.add(company)
+    db_session.flush()
+    customer = Customer(company_id=company.id, customer_code="C1", customer_name="Buyer")
+    wrong = Product(company_id=company.id, sku="WRONG", description=wrong_description, unit="piece")
+    correct = Product(company_id=company.id, sku="RIGHT", description=correct_description, unit="piece")
+    db_session.add_all([customer, wrong, correct])
+    db_session.commit()
+
+    result = MatchingEngine.match_line(
+        db_session, company.id, customer.id, 1, phrase, phrase,
+        quantity=1, unit="piece", raw_unit="piece", unit_explicit=True,
+    )
+    assert result.best_match.product_id == correct.id
+    assert result.confidence.decision != MatchDecision.AUTO_ACCEPT

@@ -483,6 +483,30 @@ class OrderWorkflowService:
         if not order.lines:
             raise OrderApprovalError("Order has no lines and cannot be approved")
 
+        stale_lines = []
+        for line in order.lines:
+            current_promotion = evaluate_quantity_bonus(
+                db, order.company_id, order.customer_id, line.matched_product_id,
+                line.final_quantity if line.final_quantity is not None else line.requested_quantity,
+                line.final_unit or line.requested_unit, line.bonus_quantity,
+            )
+            if cls._promotion_basis(line.promotion_result) != cls._promotion_basis(current_promotion):
+                stale_lines.append(line)
+        if stale_lines:
+            try:
+                for line in stale_lines:
+                    cls._refresh_promotion(db, order, line)
+                order.version += 1
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
+            line_numbers = ", ".join(str(line.line_number) for line in stale_lines)
+            raise OrderApprovalError(
+                f"Order line(s) {line_numbers} had changed promotion rules and were recalculated. "
+                "Review the updated free quantities before approving."
+            )
+
         unreviewed = [
             l for l in order.lines
             if l.status in (OrderLineStatus.NEEDS_REVIEW.value, OrderLineStatus.UNRESOLVED.value)
@@ -500,15 +524,6 @@ class OrderWorkflowService:
         business_settings = effective_business_settings(db, order.company_id)
 
         for line in order.lines:
-            current_promotion = evaluate_quantity_bonus(
-                db, order.company_id, order.customer_id, line.matched_product_id,
-                line.final_quantity if line.final_quantity is not None else line.requested_quantity,
-                line.final_unit or line.requested_unit, line.bonus_quantity,
-            )
-            if cls._promotion_basis(line.promotion_result) != cls._promotion_basis(current_promotion):
-                raise OrderApprovalError(
-                    f"Order line {line.line_number} has changed promotion rules; reload and review the line."
-                )
             if line.status not in allowed_line_statuses:
                 raise OrderApprovalError(
                     f"Order cannot be approved because line {line.line_number} is in '{line.status}' status (must be auto_accepted, confirmed, or corrected)."

@@ -36,6 +36,27 @@ EVIDENCE_TYPE_PRIORITY: Dict[str, MatchPriority] = {
 
 
 
+def _abbreviation_token_similarity(phrase: str, description: str) -> float:
+    """One-to-one token overlap, allowing long words and catalog abbreviations."""
+    requested = [token for token in phrase.split() if len(token) >= 3]
+    catalog = [token for token in description.split() if len(token) >= 3]
+    if not requested or not catalog:
+        return 0.0
+    used: set[int] = set()
+    matches = 0
+    for token in sorted(requested, key=len, reverse=True):
+        choices = [index for index, word in enumerate(catalog) if index not in used and (
+            token == word or (
+                token.isalpha() and word.isalpha() and min(len(token), len(word)) >= 4
+                and (token.startswith(word) or word.startswith(token))
+            )
+        )]
+        if choices:
+            used.add(max(choices, key=lambda index: len(catalog[index])))
+            matches += 1
+    return 200.0 * matches / (len(requested) + len(catalog))
+
+
 class MatchingEngine:
     """
     Deterministically matches parsed customer phrases against real business master data.
@@ -256,11 +277,34 @@ class MatchingEngine:
                     .order_by(Product.id)
                     .limit(200)
                 ).unique().scalars())
+            # Catalog descriptions may start with a brand or an abbreviation,
+            # so retrieve bounded candidates from other customer words as well.
+            seen_product_ids = {prod.id for prod in fuzzy_products}
+            search_terms = sorted(
+                {token for token in norm_phrase.split() if len(token) >= 4 and token.isalpha()},
+                key=lambda token: (-len(token), token),
+            )[:6]
+            for token in search_terms:
+                for prod in db.execute(
+                    select(Product)
+                    .options(joinedload(Product.packagings))
+                    .where(
+                        Product.company_id == company_id,
+                        Product.active.is_(True),
+                        Product.normalized_description.contains(token[:4]),
+                    )
+                    .order_by(Product.id)
+                    .limit(200)
+                ).unique().scalars():
+                    if prod.id not in seen_product_ids:
+                        fuzzy_products.append(prod)
+                        seen_product_ids.add(prod.id)
             for prod in fuzzy_products:
                 prod_norm_desc = prod.normalized_description
                 token_ratio = fuzz.token_set_ratio(norm_phrase, prod_norm_desc)
                 partial_ratio = fuzz.partial_ratio(norm_phrase, prod_norm_desc)
-                best_fuzzy = max(token_ratio, partial_ratio * 0.92)
+                best_fuzzy = max(token_ratio, partial_ratio * 0.92,
+                                 _abbreviation_token_similarity(norm_phrase, prod_norm_desc))
                 if best_fuzzy >= 45:
                     cls._add_evidence(
                         candidate_map, prod,

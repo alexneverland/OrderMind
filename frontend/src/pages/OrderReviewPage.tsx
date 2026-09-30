@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
   approveOrder,
@@ -223,7 +223,7 @@ function LineCard({
     (finalUnit !== null && finalUnit !== line.requested_unit) ||
     finalBonusQuantity !== (line.bonus_quantity || line.calculated_bonus_quantity || 0);
   return (
-    <article className="line-card">
+    <article className="line-card" data-order-line-id={line.id}>
       <div className="line-top">
         <div>
           <span className="eyebrow">
@@ -410,11 +410,35 @@ export function OrderReviewPage() {
   const [previewProfileId, setPreviewProfileId] = useState("");
   const [profileId, setProfileId] = useState("");
   const {
-    data: order,
+    data: loadedOrder,
     error: loadError,
     loading,
     refresh,
-  } = useAsync(() => getOrder(id, previewProfileId ? Number(previewProfileId) : undefined), [id, previewProfileId]);
+  } = useAsync(() => getOrder(id, previewProfileId ? Number(previewProfileId) : undefined), [id, previewProfileId], true);
+  const order = loadedOrder?.id === id ? loadedOrder : null;
+  const scrollAnchor = useRef<{ lineId: string; top: number } | null>(null);
+  const refreshAtCurrentLine = async () => {
+    const cards = Array.from(document.querySelectorAll<HTMLElement>("[data-order-line-id]"));
+    const visible = cards.find((card) => {
+      const rect = card.getBoundingClientRect();
+      return rect.bottom > 0 && rect.top < window.innerHeight;
+    });
+    const anchor = visible ?? cards.at(-1);
+    if (anchor) {
+      scrollAnchor.current = {
+        lineId: anchor.dataset.orderLineId ?? "",
+        top: anchor.getBoundingClientRect().top,
+      };
+    }
+    await refresh();
+  };
+  useLayoutEffect(() => {
+    const anchor = scrollAnchor.current;
+    if (!anchor || !order) return;
+    const card = document.querySelector<HTMLElement>(`[data-order-line-id="${anchor.lineId}"]`);
+    if (card) window.scrollBy(0, card.getBoundingClientRect().top - anchor.top);
+    scrollAnchor.current = null;
+  }, [order]);
   const { data: profiles } = useAsync(
     () => (order ? getProfiles(order.company_id) : Promise.resolve([])),
     [order?.company_id],
@@ -456,11 +480,16 @@ export function OrderReviewPage() {
     setError("");
     try {
       await approveOrder(order.id);
-      await refresh();
+      await refreshAtCurrentLine();
       setConfirmApproval(false);
     } catch (e) {
-      setError((e as Error).message);
       setConfirmApproval(false);
+      try {
+        await refreshAtCurrentLine();
+      } catch {
+        // The loader displays its own error if refreshing also fails.
+      }
+      setError((e as Error).message);
     } finally {
       setBusy(false);
     }
@@ -472,7 +501,7 @@ export function OrderReviewPage() {
     try {
       const result = await exportOrder(order.id, Number(profileId));
       saveDownload(result.blob, result.filename);
-      await refresh();
+      await refreshAtCurrentLine();
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -552,7 +581,7 @@ export function OrderReviewPage() {
               order={order}
               line={line}
               previewProfile={previewProfile}
-              refresh={refresh}
+              refresh={refreshAtCurrentLine}
               setError={setError}
             />
           ))}

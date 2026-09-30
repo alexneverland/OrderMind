@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   fireEvent,
   render,
@@ -99,6 +99,7 @@ const show = () =>
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.spyOn(window, "scrollBy").mockImplementation(() => {});
   current = baseOrder();
   mock.getOrder.mockImplementation(async () => structuredClone(current));
   mock.getProfiles.mockResolvedValue([
@@ -132,6 +133,7 @@ beforeEach(() => {
   });
   vi.spyOn(window, "confirm").mockReturnValue(true);
 });
+afterEach(() => vi.restoreAllMocks());
 
 describe("operator review", () => {
   it("renders verbatim raw input, match and review status", async () => {
@@ -184,6 +186,30 @@ describe("operator review", () => {
     fireEvent.change(screen.getByRole("spinbutton", { name: "Final quantity" }), { target: { value: "20" } });
     fireEvent.click(screen.getByRole("button", { name: "Save values" }));
     await waitFor(() => expect(mock.updateFinalValues).toHaveBeenCalledWith(1, 7, 20, "piece", undefined));
+  });
+  it("keeps the current line mounted and restores its viewport position after save", async () => {
+    let top = 180;
+    const rectSpy = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      const y = this.hasAttribute("data-order-line-id") ? top : 0;
+      return { x: 0, y, top: y, left: 0, bottom: y + 100, right: 100,
+        width: 100, height: 100, toJSON: () => ({}) } as DOMRect;
+    });
+    mock.updateFinalValues.mockImplementation(async () => {
+      current.lines[0].final_quantity = 20;
+    });
+    mock.getOrder.mockImplementation(async () => {
+      if (current.lines[0].final_quantity === 20) top = 70;
+      return structuredClone(current);
+    });
+    show();
+    const card = (await screen.findByText("Smoked turkey")).closest("[data-order-line-id]");
+    fireEvent.click(screen.getByRole("button", { name: "Edit final values" }));
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Final quantity" }), { target: { value: "20" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save values" }));
+    await waitFor(() => expect(card?.textContent).toContain("20 piece"));
+    expect(card).toBe(document.querySelector('[data-order-line-id="7"]'));
+    expect(window.scrollBy).toHaveBeenCalledWith(0, -110);
+    rectSpy.mockRestore();
   });
   it("resets the bonus editor after recalculation and does not resend a stale bonus", async () => {
     current.lines[0].calculated_bonus_quantity = 1;
@@ -239,7 +265,7 @@ describe("operator review", () => {
     show();
     expect(await screen.findByText("100 τεμάχια")).toBeInTheDocument();
     expect(screen.getByText("+ 10 τεμάχια δώρο (χωριστή γραμμή Α)")).toBeInTheDocument();
-    expect(mock.getOrder).toHaveBeenCalledWith(1, 20);
+    await waitFor(() => expect(mock.getOrder).toHaveBeenCalledWith(1, 20));
   });
   it("confirms a line and refreshes its status", async () => {
     show();
@@ -306,6 +332,24 @@ describe("operator review", () => {
     expect(
       screen.queryByRole("button", { name: "Edit final values" }),
     ).not.toBeInTheDocument();
+  });
+  it("refreshes the order when approval recalculates a stale promotion", async () => {
+    current.lines[0].status = "confirmed";
+    mock.approveOrder.mockImplementationOnce(async () => {
+      current.lines[0].calculated_bonus_quantity = 2;
+      current.lines[0].promotion_result = {
+        applied_rule_id: 7, calculated_bonus_quantity: 2,
+        explanation: "Updated promotion: 2 free pieces.",
+        requires_review: false, matching_rule_ids: [7],
+      };
+      throw new Error("Promotion was recalculated. Review before approving.");
+    });
+    show();
+    fireEvent.click(await screen.findByRole("button", { name: "Approve order" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm approval" }));
+    expect(await screen.findByText("Updated promotion: 2 free pieces.")).toBeInTheDocument();
+    expect(screen.getByText("Promotion was recalculated. Review before approving.")).toBeInTheDocument();
+    expect(mock.getOrder.mock.calls.length).toBeGreaterThan(1);
   });
   it("exports with a selected profile and triggers download", async () => {
     current.status = "approved";
