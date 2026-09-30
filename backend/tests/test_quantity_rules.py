@@ -244,3 +244,187 @@ def test_export_rule_stays_with_selected_profile_and_invalid_apply_rolls_back(db
     assert bad.status_code == 400
     assert db_session.execute(select(CompanyRule).where(CompanyRule.company_id == a.id)).scalars().all() == []
     assert db_session.get(CompanyBusinessSettings, a.id).unitless_order_behavior == "require_review"
+
+
+def promotion_order(db, company, customer, product, quantity=20, unit="piece", bonus=0):
+    match = LineMatchResult(
+        line_number=1, original_text=f"{quantity} SKU", product_phrase="SKU",
+        quantity=quantity, unit=unit, raw_unit=unit, unit_explicit=True,
+        quantity_text=f"{quantity}+{bonus}" if bonus else None, bonus_quantity=bonus,
+        best_match=MatchedProductInfo(product_id=product.id, sku=product.sku,
+                                      description=product.description, unit=product.unit),
+        confidence=ConfidenceResult(score=0.99, decision=MatchDecision.AUTO_ACCEPT, reasons=[]),
+    )
+    return OrderWorkflowService.create_order_from_match(
+        db, company.id, customer.id, f"{quantity} SKU", [match]
+    )
+
+
+@pytest.mark.parametrize("old_override,new_quantity,new_calculated", [
+    (3, 40, 4), (2, 30, 3), (3, 5, 0),
+])
+def test_quantity_change_clears_stale_promotion_override(
+    db_session, old_override, new_quantity, new_calculated
+):
+    a, _, ca, _, pa, _ = data(db_session)
+    create_rule(db_session, a.id, RuleWrite(product_id=pa.id, configuration=config()))
+    db_session.commit()
+    order = promotion_order(db_session, a, ca, pa)
+    line = order.lines[0]
+    OrderWorkflowService.update_line_final_values(
+        db_session, order.id, line.id, final_bonus_quantity=old_override
+    )
+    changed = OrderWorkflowService.update_line_final_values(
+        db_session, order.id, line.id, final_quantity=new_quantity
+    )
+    assert changed.calculated_bonus_quantity == new_calculated
+    assert changed.final_bonus_quantity is None
+    assert (changed.promotion_result is None) == (new_quantity == 5)
+    assert changed.bonus_quantity == 0
+
+
+def test_same_patch_bonus_is_a_fresh_choice_and_manual_bonus_without_rule_survives(db_session):
+    a, _, ca, _, pa, _ = data(db_session)
+    create_rule(db_session, a.id, RuleWrite(product_id=pa.id, configuration=config()))
+    db_session.commit()
+    order = promotion_order(db_session, a, ca, pa)
+    line = order.lines[0]
+    OrderWorkflowService.update_line_final_values(db_session, order.id, line.id, final_bonus_quantity=3)
+    changed = OrderWorkflowService.update_line_final_values(
+        db_session, order.id, line.id, final_quantity=40, final_bonus_quantity=5
+    )
+    assert (changed.calculated_bonus_quantity, changed.final_bonus_quantity) == (4, 5)
+    create_rule(db_session, a.id, RuleWrite(product_id=pa.id, configuration=config(threshold=100)))
+    db_session.commit()
+    no_rule = promotion_order(db_session, a, ca, pa, quantity=1)
+    manual = OrderWorkflowService.update_line_final_values(
+        db_session, no_rule.id, no_rule.lines[0].id, final_bonus_quantity=7
+    )
+    updated = OrderWorkflowService.update_line_final_values(
+        db_session, no_rule.id, manual.id, final_quantity=2
+    )
+    assert updated.promotion_result is None
+    assert updated.final_bonus_quantity == 7
+
+
+def test_input_change_invalidates_override_even_if_calculated_award_is_equal(db_session):
+    a, _, ca, _, pa, _ = data(db_session)
+    create_rule(db_session, a.id, RuleWrite(product_id=pa.id, configuration=config()))
+    db_session.commit()
+    order = promotion_order(db_session, a, ca, pa)
+    line = order.lines[0]
+    OrderWorkflowService.update_line_final_values(db_session, order.id, line.id, final_bonus_quantity=3)
+    changed = OrderWorkflowService.update_line_final_values(
+        db_session, order.id, line.id, final_quantity=25
+    )
+    assert changed.calculated_bonus_quantity == 2
+    assert changed.final_bonus_quantity is None
+
+
+def test_fresh_bonus_in_same_patch_resolves_new_conflict_without_extra_review(db_session):
+    a, _, ca, _, pa, _ = data(db_session)
+    db_session.add(CompanyBusinessSettings(company_id=a.id, bonus_enabled=True, bonus_expression_mode="paid_plus_bonus"))
+    create_rule(db_session, a.id, RuleWrite(product_id=pa.id, configuration=config()))
+    db_session.commit()
+    order = promotion_order(db_session, a, ca, pa, quantity=20, bonus=2)
+    line = order.lines[0]
+    OrderWorkflowService.confirm_line(db_session, order.id, line.id)
+    changed = OrderWorkflowService.update_line_final_values(
+        db_session, order.id, line.id, final_quantity=30, final_bonus_quantity=5
+    )
+    assert changed.promotion_result["requires_review"] is True
+    assert (changed.calculated_bonus_quantity, changed.final_bonus_quantity) == (3, 5)
+    assert changed.status == "confirmed"
+    assert OrderWorkflowService.approve_order(db_session, order.id).status == "approved"
+
+
+def test_unit_and_product_change_clear_stale_bonus(db_session):
+    a, _, ca, _, pa, _ = data(db_session)
+    pa.unit = "case"
+    other = Product(company_id=a.id, sku="OTHER", description="Other", unit="case")
+    db_session.add(other)
+    create_rule(db_session, a.id, RuleWrite(product_id=pa.id, configuration=config(unit="case")))
+    db_session.commit()
+    order = promotion_order(db_session, a, ca, pa, unit="case")
+    line = order.lines[0]
+    OrderWorkflowService.update_line_final_values(db_session, order.id, line.id, final_bonus_quantity=3)
+    changed = OrderWorkflowService.update_line_final_values(
+        db_session, order.id, line.id, final_unit="piece"
+    )
+    assert (changed.promotion_result, changed.calculated_bonus_quantity, changed.final_bonus_quantity) == (None, 0, None)
+    OrderWorkflowService.update_line_final_values(db_session, order.id, line.id, final_unit="case", final_bonus_quantity=3)
+    _, corrected = OrderWorkflowService.correct_line(db_session, order.id, line.id, other.id)
+    assert corrected.matched_product_id == other.id
+    assert (corrected.promotion_result, corrected.calculated_bonus_quantity, corrected.final_bonus_quantity) == (None, 0, None)
+
+
+def test_rule_change_with_same_award_invalidates_override_and_refreshes_pending(db_session, client):
+    a, _, ca, _, pa, _ = data(db_session)
+    first = create_rule(db_session, a.id, RuleWrite(product_id=pa.id, configuration=config(threshold=10, reward=1)))
+    db_session.commit()
+    order = promotion_order(db_session, a, ca, pa)
+    line = order.lines[0]
+    OrderWorkflowService.update_line_final_values(db_session, order.id, line.id, final_bonus_quantity=3)
+    assert line.calculated_bonus_quantity == 2
+    replacement = client.post(f"/api/v1/companies/{a.id}/rules", json={
+        "product_id": pa.id, "configuration": config(threshold=20, reward=2).model_dump(),
+    })
+    assert replacement.status_code == 201, replacement.text
+    assert client.delete(f"/api/v1/companies/{a.id}/rules/{first.id}").status_code == 204
+    db_session.refresh(line)
+    assert line.promotion_result["applied_rule_id"] == replacement.json()["id"]
+    assert line.calculated_bonus_quantity == 2
+    assert line.final_bonus_quantity is None
+
+
+def test_rule_update_refreshes_pending_and_approval_checks_current_promotion(db_session, client):
+    a, _, ca, _, pa, _ = data(db_session)
+    rule = create_rule(db_session, a.id, RuleWrite(product_id=pa.id, configuration=config()))
+    db_session.commit()
+    order = promotion_order(db_session, a, ca, pa)
+    line = order.lines[0]
+    OrderWorkflowService.update_line_final_values(db_session, order.id, line.id, final_bonus_quantity=3)
+    updated = client.put(f"/api/v1/companies/{a.id}/rules/{rule.id}", json={
+        "configuration": config(threshold=5).model_dump(),
+    })
+    assert updated.status_code == 200, updated.text
+    db_session.refresh(line)
+    assert line.calculated_bonus_quantity == 4
+    assert line.final_bonus_quantity is None
+    line.calculated_bonus_quantity = 2
+    line.promotion_result = {**line.promotion_result, "calculated_bonus_quantity": 2}
+    db_session.commit()
+    with pytest.raises(OrderApprovalError, match="changed promotion rules"):
+        OrderWorkflowService.approve_order(db_session, order.id)
+
+
+def test_disabling_rule_removes_pending_bonus_before_approval(db_session, client):
+    a, _, ca, _, pa, _ = data(db_session)
+    rule = create_rule(db_session, a.id, RuleWrite(product_id=pa.id, configuration=config()))
+    db_session.commit()
+    order = promotion_order(db_session, a, ca, pa)
+    line = order.lines[0]
+    OrderWorkflowService.update_line_final_values(db_session, order.id, line.id, final_bonus_quantity=3)
+    assert client.delete(f"/api/v1/companies/{a.id}/rules/{rule.id}").status_code == 204
+    db_session.refresh(line)
+    assert (line.promotion_result, line.calculated_bonus_quantity, line.final_bonus_quantity) == (None, 0, None)
+    assert OrderWorkflowService.approve_order(db_session, order.id).approved_snapshot["lines"][0]["bonus_quantity"] == 0
+
+
+def test_new_conflict_requires_review_and_blocks_approval_until_decision(db_session, client):
+    a, _, ca, _, pa, _ = data(db_session)
+    create_rule(db_session, a.id, RuleWrite(product_id=pa.id, configuration=config(threshold=10)))
+    db_session.commit()
+    order = promotion_order(db_session, a, ca, pa)
+    line = order.lines[0]
+    OrderWorkflowService.update_line_final_values(db_session, order.id, line.id, final_bonus_quantity=3)
+    added = client.post(f"/api/v1/companies/{a.id}/rules", json={
+        "product_id": pa.id, "configuration": config(threshold=20).model_dump(),
+    })
+    assert added.status_code == 201, added.text
+    db_session.refresh(line)
+    assert line.promotion_result["requires_review"] is True
+    assert line.final_bonus_quantity is None
+    assert line.status == "needs_review"
+    with pytest.raises(OrderApprovalError):
+        OrderWorkflowService.approve_order(db_session, order.id)

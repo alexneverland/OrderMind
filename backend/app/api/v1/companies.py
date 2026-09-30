@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm.exc import StaleDataError
 from typing import List
 from pydantic import ValidationError
 
@@ -17,7 +18,8 @@ from backend.app.schemas.company import CompanyCreate, CompanyResponse
 from backend.app.schemas.rules import (AnalyzeRequest, ApplyProposalRequest, ExportPatch, QuantityBonusConfig,
     ResolvedQuantityRule, RuleCandidate, RuleResponse, RuleUpdate, RuleWrite,
     RulesProposal, merged_settings)
-from backend.app.services.company_rule_service import create_rule, rule_fingerprint, rule_response, validate_rule_scope
+from backend.app.services.company_rule_service import (create_rule, refresh_pending_promotions,
+    rule_fingerprint, rule_response, validate_rule_scope)
 from backend.app.services.export_profile_service import ExportProfileService
 from backend.app.services.rules_assistant import analyze_rule_description
 
@@ -105,6 +107,7 @@ def post_company_rule(company_id: int, payload: RuleWrite, db: Session = Depends
     _company_or_404(db, company_id)
     try:
         row = create_rule(db, company_id, payload)
+        refresh_pending_promotions(db, company_id)
         db.commit()
         return rule_response(row)
     except ValueError as exc:
@@ -113,6 +116,9 @@ def post_company_rule(company_id: int, payload: RuleWrite, db: Session = Depends
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(status_code=409, detail="Rule changed concurrently; reload and retry") from exc
+    except StaleDataError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Pending orders changed concurrently; reload and retry") from exc
 
 
 @router.post("/{company_id}/rules/analyze", response_model=RulesProposal)
@@ -185,6 +191,8 @@ def apply_company_rules(company_id: int, payload: ApplyProposalRequest, db: Sess
                 profile.format, profile.bonus_separate_row, profile.bonus_marker,
                 profile.quantity_output_unit, profile.convert_case_using_pieces_per_case,
             )
+        if proposal.quantity_rules:
+            refresh_pending_promotions(db, company_id)
         db.commit()
         return {"settings": BusinessSettingsResponse.model_validate(settings_row),
                 "rules": [rule_response(rule) for rule in created]}
@@ -194,6 +202,9 @@ def apply_company_rules(company_id: int, payload: ApplyProposalRequest, db: Sess
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(status_code=409, detail="Rules changed concurrently; reload and retry") from exc
+    except StaleDataError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Pending orders changed concurrently; reload and retry") from exc
 
 
 @router.put("/{company_id}/rules/{rule_id}", response_model=RuleResponse)
@@ -215,6 +226,7 @@ def put_company_rule(company_id: int, rule_id: int, payload: RuleUpdate, db: Ses
         rule.fingerprint = rule_fingerprint(product_id, customer_id, QuantityBonusConfig.model_validate(rule.configuration))
         if payload.enabled is not None:
             rule.enabled = payload.enabled
+        refresh_pending_promotions(db, company_id)
         db.commit()
         return rule_response(rule)
     except ValueError as exc:
@@ -223,6 +235,9 @@ def put_company_rule(company_id: int, rule_id: int, payload: RuleUpdate, db: Ses
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(status_code=409, detail="An identical rule already exists") from exc
+    except StaleDataError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Pending orders changed concurrently; reload and retry") from exc
 
 
 @router.delete("/{company_id}/rules/{rule_id}", status_code=204)
@@ -231,5 +246,13 @@ def disable_company_rule(company_id: int, rule_id: int, db: Session = Depends(ge
     rule = db.get(CompanyRule, rule_id)
     if not rule or rule.company_id != company_id:
         raise HTTPException(status_code=404, detail="Rule not found")
-    rule.enabled = False
-    db.commit()
+    try:
+        rule.enabled = False
+        refresh_pending_promotions(db, company_id)
+        db.commit()
+    except StaleDataError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Pending orders changed concurrently; reload and retry") from exc
+    except Exception:
+        db.rollback()
+        raise

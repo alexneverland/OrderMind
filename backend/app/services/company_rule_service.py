@@ -144,3 +144,30 @@ def effective_bonus(line) -> float:
     if line.bonus_quantity:
         return line.bonus_quantity
     return line.calculated_bonus_quantity or 0.0
+
+
+def refresh_pending_promotions(db: Session, company_id: int) -> None:
+    """Keep pending orders in the same transaction as a rule change."""
+    from backend.app.models.order import Order
+    from backend.app.schemas.workflow import OrderStatus
+    from backend.app.services.order_workflow_service import OrderWorkflowService
+
+    db.flush()
+    orders = db.execute(select(Order).where(
+        Order.company_id == company_id,
+        Order.status == OrderStatus.PENDING_REVIEW.value,
+    )).scalars()
+    for order in orders:
+        changed = False
+        for line in order.lines:
+            before = (
+                OrderWorkflowService._promotion_basis(line.promotion_result),
+                line.final_bonus_quantity, line.status,
+            )
+            OrderWorkflowService._refresh_promotion(db, order, line)
+            changed |= before != (
+                OrderWorkflowService._promotion_basis(line.promotion_result),
+                line.final_bonus_quantity, line.status,
+            )
+        if changed:
+            order.version += 1

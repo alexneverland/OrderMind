@@ -192,7 +192,14 @@ function LineCard({
   );
   const [unit, setUnit] = useState(line.final_unit ?? (line.requested_unit === "unknown" ? "unknown" : line.requested_unit));
   const [bonusQuantity, setBonusQuantity] = useState(String(line.final_bonus_quantity ?? (line.bonus_quantity || line.calculated_bonus_quantity || 0)));
+  const [bonusEdited, setBonusEdited] = useState(false);
   const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    setQuantity(String(line.final_quantity ?? line.requested_quantity));
+    setUnit(line.final_unit ?? (line.requested_unit === "unknown" ? "unknown" : line.requested_unit));
+    setBonusQuantity(String(line.final_bonus_quantity ?? (line.bonus_quantity || line.calculated_bonus_quantity || 0)));
+    setBonusEdited(false);
+  }, [line]);
   const editable = order.status === "pending_review";
   const act = async (action: () => Promise<unknown>) => {
     setBusy(true);
@@ -341,7 +348,8 @@ function LineCard({
           className="inline-edit"
           onSubmit={(e) => {
             e.preventDefault();
-            const operatorChoseBonus = line.promotion_result?.requires_review || line.final_bonus_quantity != null || Number(bonusQuantity) !== finalBonusQuantity;
+            const basisChanged = Number(quantity) !== finalQuantity || unit !== finalUnit;
+            const operatorChoseBonus = bonusEdited || (!basisChanged && line.promotion_result?.requires_review && line.final_bonus_quantity == null);
             void act(() =>
               updateFinalValues(order.id, line.id, Number(quantity), unit, operatorChoseBonus ? Number(bonusQuantity) : undefined),
             ).then((success) => {
@@ -374,7 +382,7 @@ function LineCard({
           <label>
             Ποσότητα δώρου
             <input type="number" min="0" step="any" value={bonusQuantity}
-              onChange={(e) => setBonusQuantity(e.target.value)} required />
+              onChange={(e) => { setBonusQuantity(e.target.value); setBonusEdited(true); }} required />
           </label>
           <button
             className="button primary"
