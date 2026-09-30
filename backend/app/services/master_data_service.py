@@ -1,5 +1,6 @@
 import io
 import math
+import zipfile
 from decimal import Decimal, InvalidOperation
 from typing import Dict, List, Any, Optional
 import pandas as pd
@@ -7,6 +8,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select
 
 from backend.app.core.text_normalizer import normalize_text
+from backend.app.core.office_archive import validate_office_archive
 from backend.app.models.customer import Customer
 from backend.app.models.product import Product, Packaging
 from backend.app.schemas.imports import (
@@ -137,6 +139,8 @@ class MasterDataService:
     @staticmethod
     def read_excel_dataframe(file_bytes: bytes) -> pd.DataFrame:
         """Reads Excel file into a DataFrame, handling various sheet formats."""
+        if file_bytes.startswith(b"PK") or zipfile.is_zipfile(io.BytesIO(file_bytes)):
+            validate_office_archive(file_bytes)
         try:
             df = pd.read_excel(io.BytesIO(file_bytes), engine="openpyxl", dtype=str)
         except Exception:
@@ -226,12 +230,9 @@ class MasterDataService:
         skipped = 0
         error_details: List[RowErrorDetail] = []
 
-        # Pre-fetch existing customer codes for this company to prevent duplicates
-        existing_codes_query = select(Customer.customer_code).where(Customer.company_id == company_id)
-        existing_codes = set(db.execute(existing_codes_query).scalars().all())
-
-        seen_in_batch = set()
-
+        # Prepare spreadsheet values and transient objects before taking the
+        # SQLite writer lock. Duplicate checks still use the locked database.
+        prepared_rows = []
         for idx, row in df.iterrows():
             row_num = idx + 2  # Excel 1-based, plus header row
             row_dict = row.to_dict()
@@ -268,6 +269,30 @@ class MasterDataService:
                 ))
                 continue
 
+            customer = Customer(
+                company_id=company_id,
+                customer_code=code,
+                customer_name=name,
+                email=email,
+                phone=phone,
+                active=active
+            )
+            prepared_rows.append((row_num, row_dict, customer))
+
+        if not prepared_rows:
+            return ImportSummaryResponse(
+                entity_type="customers", total_rows=total_rows,
+                imported=0, skipped=0, errors=len(error_details),
+                error_details=error_details,
+            )
+
+        db.connection().exec_driver_sql("BEGIN IMMEDIATE")
+        existing_codes_query = select(Customer.customer_code).where(Customer.company_id == company_id)
+        existing_codes = set(db.execute(existing_codes_query).scalars().all())
+        seen_in_batch = set()
+
+        for row_num, row_dict, customer in prepared_rows:
+            code = customer.customer_code
             # Validation: Duplicate in batch
             if code in seen_in_batch:
                 error_details.append(RowErrorDetail(
@@ -289,14 +314,6 @@ class MasterDataService:
                 continue
 
             # Valid customer, add to session
-            customer = Customer(
-                company_id=company_id,
-                customer_code=code,
-                customer_name=name,
-                email=email,
-                phone=phone,
-                active=active
-            )
             db.add(customer)
             seen_in_batch.add(code)
             existing_codes.add(code)
@@ -310,7 +327,7 @@ class MasterDataService:
             imported=imported,
             skipped=skipped,
             errors=len(error_details),
-            error_details=error_details
+            error_details=sorted(error_details, key=lambda error: error.row_number)
         )
 
     @classmethod
@@ -335,13 +352,8 @@ class MasterDataService:
         skipped = 0
         error_details: List[RowErrorDetail] = []
 
-        # Pre-fetch existing product SKUs for this company
-        existing_skus_query = select(Product.sku).where(Product.company_id == company_id)
-        existing_skus = set(db.execute(existing_skus_query).scalars().all())
-        existing_products = {p.sku: p for p in db.execute(select(Product).where(Product.company_id == company_id)).scalars()}
-
-        seen_in_batch = set()
-
+        prepared_rows = []
+        gross_col = mapping.get("kg_per_piece")
         for idx, row in df.iterrows():
             row_num = idx + 2
             row_dict = row.to_dict()
@@ -351,7 +363,6 @@ class MasterDataService:
             barcode_col = mapping.get("barcode")
             unit_col = mapping.get("unit")
             active_col = mapping.get("active")
-            gross_col = mapping.get("kg_per_piece")
 
             sku = _clean_val(row.get(sku_col)) if sku_col else None
             description = _clean_val(row.get(desc_col)) if desc_col else None
@@ -388,6 +399,32 @@ class MasterDataService:
                 ))
                 continue
 
+            product = Product(
+                company_id=company_id,
+                sku=sku,
+                description=description,
+                barcode=barcode,
+                unit=unit or "piece",
+                kg_per_piece=gross_weight,
+                active=active
+            )
+            prepared_rows.append((row_num, row_dict, product))
+
+        if not prepared_rows:
+            return ImportSummaryResponse(
+                entity_type="products", total_rows=total_rows,
+                imported=0, skipped=0, errors=len(error_details),
+                error_details=error_details,
+            )
+
+        db.connection().exec_driver_sql("BEGIN IMMEDIATE")
+        existing_products = {p.sku: p for p in db.execute(select(Product).where(Product.company_id == company_id)).scalars()}
+        existing_skus = set(existing_products)
+        seen_in_batch = set()
+
+        for row_num, row_dict, product in prepared_rows:
+            sku = product.sku
+            gross_weight = product.kg_per_piece
             # Validation: Duplicate in batch
             if sku in seen_in_batch:
                 error_details.append(RowErrorDetail(
@@ -417,15 +454,6 @@ class MasterDataService:
                 ))
                 continue
 
-            product = Product(
-                company_id=company_id,
-                sku=sku,
-                description=description,
-                barcode=barcode,
-                unit=unit or "piece",
-                kg_per_piece=gross_weight,
-                active=active
-            )
             db.add(product)
             seen_in_batch.add(sku)
             existing_skus.add(sku)
@@ -439,7 +467,7 @@ class MasterDataService:
             imported=imported,
             skipped=skipped,
             errors=len(error_details),
-            error_details=error_details
+            error_details=sorted(error_details, key=lambda error: error.row_number)
         )
 
     @classmethod
