@@ -1,8 +1,10 @@
 [project]
 name = "ordermind"
 version = "0.1.0"
-description = "OrderMind - AI Order Intake Platform for multi-channel B2B orders"
+description = "Local B2B order intake and review with AI extraction, catalog matching, and SQLite"
 readme = "README.md"
+license = "Apache-2.0"
+authors = [{ name = "Lazaros Avramidis" }]
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115.0",

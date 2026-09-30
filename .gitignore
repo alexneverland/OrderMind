@@ -45,6 +45,9 @@ venv.bak/
 *.pfx
 secrets/
 credentials/
+application_default_credentials.json
+credentials.json
+*service-account*.json
 
 # Databases & local sqlite
 *.sqlite3
@@ -58,6 +61,11 @@ credentials/
 data/uploads/
 data/exports/
 data/samples/real/
+backups/
+uploads/
+exports/
+logs/
+*.log
 *.xlsx
 *.xls
 *.csv

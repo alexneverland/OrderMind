@@ -1,6 +1,6 @@
 # OrderMind
 
-OrderMind is a B2B order intake workspace. It turns customer order text into reviewable order lines, matches them against a company's own catalog, records operator corrections, and exports approved orders. The catalog and operator decisions are the source of truth; an AI provider extracts text but does not invent products or SKUs.
+OrderMind is a local B2B order intake and review workspace built with FastAPI, React, and SQLite. It turns customer orders into reviewable lines, matches them against each company's catalog, records operator corrections, and exports approved orders. The catalog and operator decisions are the source of truth; an AI provider extracts customer evidence and cannot create catalog products or SKUs.
 
 The operator UI runs at `http://127.0.0.1:8001/` after a frontend build. API docs remain at `http://127.0.0.1:8001/docs`.
 
@@ -15,11 +15,15 @@ The operator UI runs at `http://127.0.0.1:8001/` after a frontend build. API doc
 
 Email intake, legacy `.doc` files, authentication, and direct ERP integrations are **planned**, not available yet. Exported files can be imported into other systems separately.
 
+The current application is intended for a trusted local operator. Keep the API bound to `127.0.0.1`: company isolation in the database does not provide user authentication or access control. See [SECURITY.md](SECURITY.md) for data handling and reporting guidance.
+
 ## First local run (Windows PowerShell)
 
-Run these commands from the repository root (`C:\OrderMind`). Python 3.12+, uv, and Node.js are required for the UI build.
+Install Git, Python 3.12 or later, uv, and Node.js with npm. Supported Node versions are 20.19+ within 20.x, 22.12+ within 22.x, or 24+. These satisfy both Vite and Vitest. Clone the repository, or extract its downloaded ZIP and open a terminal in the extracted repository root.
 
 ```powershell
+git clone https://github.com/alexneverland/OrderMind.git
+cd OrderMind
 uv sync --frozen
 if (-not (Test-Path -LiteralPath .env)) { Copy-Item .env.example .env }
 .\.venv\Scripts\python.exe -m alembic upgrade head
@@ -30,13 +34,39 @@ cd ..
 .\.venv\Scripts\python.exe -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8001 --no-access-log
 ```
 
-Open `http://127.0.0.1:8001/`. Check `/health` and `/docs` for the API. Stop the server with Ctrl+C. If you rebuild the UI while Uvicorn is running, restart Uvicorn so it picks up the built assets. Port 8001 avoids the local Astakos service currently using port 8000; choose another free port if needed. The `.env` file is local and ignored by Git; the default `AI_PROVIDER=mock` needs no API key. Select a provider in Settings or set `AI_PROVIDER`, `AI_MODEL` and its credentials in `.env`, then restart the server.
+Open `http://127.0.0.1:8001/`. Check `/health` and `/docs` for the API. Stop the server with Ctrl+C. If you rebuild the UI while Uvicorn is running, restart Uvicorn so it picks up the built assets. If port 8001 is occupied, choose another free port in the Uvicorn command. The `.env` file is local and ignored by Git; the default `AI_PROVIDER=mock` needs no API key. Select a provider in Settings or set `AI_PROVIDER`, `AI_MODEL` and its credentials in `.env`, then restart the server.
+
+### Linux and macOS
+
+After cloning and entering the repository root, use:
+
+```sh
+uv sync --frozen
+test -f .env || cp .env.example .env
+uv run --frozen python -m alembic upgrade head
+cd frontend
+npm ci
+npm run build
+cd ..
+uv run --frozen python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8001 --no-access-log
+```
+
+The cross-platform `uv run --frozen python` commands also work in PowerShell. No global Python package installation is needed.
 
 For frontend development, run `npm run dev` in `frontend/` and open `http://127.0.0.1:5173/`. Vite proxies `/api` to `http://127.0.0.1:8001`; override with `VITE_API_PROXY_TARGET` if the backend uses another port. The production build uses same-origin `/api/v1`.
 
 On a localhost instance, **Settings → AI extraction** can choose mock, Gemini, OpenAI, Claude or Vertex, set the model, and enter or replace the selected API key. Vertex uses a Google Cloud project and location plus Application Default Credentials on the host. The screen saves settings to the local ignored `.env` and applies them to new orders immediately. The settings API never returns keys. Process environment variables take precedence and cannot be overridden from this screen. The API endpoint is limited to same-origin localhost requests because this milestone has no authentication.
 
-If there is no company yet, the Customers and Products pages show a **Create company** form. The Excel import appears after the company is created and selected.
+### First order
+
+1. Create a company on the dashboard or the Customers/Products page, then select it in the top bar.
+2. Import `backend/fixtures/sample_customers.xlsx` under **Customers** and `sample_products.xlsx` under **Products**. Preview and confirm the column mappings. These files contain synthetic examples.
+3. Optionally import `sample_packaging.xlsx` under **Products**, after the products exist.
+4. Under **New order**, select a customer. For an offline smoke test with the mock provider, paste `5 τεμάχια Γαλοπούλα Καπνιστή 1kg`. Parse and review the suggested product, quantity, and final unit.
+5. Resolve every pending line, then approve. New companies have neutral business rules; configure company conventions explicitly when needed.
+6. Create an export profile under **Export profiles**. A general CSV/XLSX profile needs column mappings; a four-column order sheet has fixed columns. Select the profile on the approved order and download its export.
+
+The Excel import appears after a company is selected. The mock provider is a limited text parser; arbitrary layouts, OCR and AI rule proposals require a configured remote provider.
 
 On a fresh database, create the first company from the dashboard. Select it in the top bar. Under **Customers** and **Products**, add records individually or use **Import from Excel**: choose an `.xlsx` file (up to 10 MB), preview its columns and sample rows, check the suggested column mapping, then import. Customer files need a code and name column; product files need an SKU and description column. The UI reports imported rows and row-level errors. Duplicate customer codes are errors. Duplicate product SKUs remain errors unless the Excel explicitly maps gross kg per piece; then only that trusted weight is updated for the existing SKU. Synthetic sample workbooks are in `backend/fixtures/`. Select a company in the top bar, then use **New order** to choose a customer and paste text or upload a customer file (up to 10 MB). TXT, CSV, XLSX, DOCX and text PDFs are read locally. JPG, PNG, WebP, handwritten photos and scanned PDFs require a configured Gemini, OpenAI, Claude or Vertex provider in **Settings**; the mock provider cannot transcribe them. OCR marks unreadable words or numbers as `[UNCLEAR]` and the operator must correct those before continuing. Check and edit all extracted text against the original file before selecting **Parse & Match**, especially product names, quantities and units. The original file is not saved; the order stores the submitted text. Legacy `.doc` and `.xls` files are not supported yet. Review each line, confirm or correct its product, edit final quantity/unit when needed, approve when all lines are ready, then select an export profile and download. Create profiles under **Export profiles**. The mock parser works without a key.
 
@@ -50,7 +80,7 @@ Order intake does not require a fixed customer sheet layout. The configured AI p
 
 Pallet planning is optional on each four-column order-sheet export profile and disabled until explicitly configured. Configure it under **Export profiles** or describe it in **Settings → Company business rules**. AI Analyze proposes group membership, capacities, row counting and layout; the operator resolves company catalog references and applies the proposal. Runtime planning is deterministic and does not call AI. The manual editor supports ordered dedicated SKU groups, optional maximum gross weight and row limits (at least one when enabled), actual exported rows or logical product lines, and three layouts: one sheet with pallet sections, one worksheet per pallet, or one workbook per pallet inside a ZIP. Titles, headers and separator rows do not count against product capacity. Order review offers a pallet preview with assigned SKUs, paid/free quantities, gross weight, row count and warnings before download.
 
-For weight-limited pallets, kg orders weigh their approved kg quantity. Piece orders require trusted **gross kg per piece**, entered on Products or mapped from the product Excel column «Μικτό βάρος»; case orders require trusted gross kg per case or a validated pieces-per-case ratio multiplied by gross kg per piece. Paid and free units both contribute physical weight. Existing `Packaging.weight` has no guaranteed unit or per-unit meaning and is not used for pallet limits. Missing trusted weight fails clearly with the SKU. Approval freezes the relevant weight basis and profile policy; later master-data or profile changes do not silently alter the approved pallet export. Existing approved snapshots without those fields are not backfilled. The final ZIP bytes are hashed in the normal export audit.
+For weight-limited pallets, kg orders weigh their approved kg quantity. Piece orders require trusted **gross kg per piece**, entered on Products or mapped from the product Excel column «Μικτό βάρος»; case orders require trusted gross kg per case or a validated pieces-per-case ratio multiplied by gross kg per piece. Paid and free units both contribute physical weight. Existing `Packaging.weight` has no guaranteed unit or per-unit meaning and is not used for pallet limits. If any enabled weight-limited profile requires missing weight, approval is rejected with the profile and SKU; add the weight or resolve the final unit before approving again. Approval freezes the relevant weight basis and profile policy; later master-data or profile changes do not silently alter the approved pallet export. Pallet preview is available only for profiles enabled in the approved snapshot. Existing approved snapshots without those fields are not backfilled. The final ZIP bytes are hashed in the normal export audit.
 
 ### Company rules and export policy
 
@@ -82,6 +112,22 @@ npm run build
 
 Tests use temporary databases. They do not require the local `ordermind.db` or a Gemini key.
 
+The two pre-Alembic compatibility tests also need the old Git revision `1cd7f52`; they are skipped when that revision is unavailable, such as in a downloaded ZIP or a shallow clone. Fresh-install migrations are tested independently of Git history.
+
+If pytest reports a Windows permission error for its shared temporary directory, run it with a new disposable directory: `uv run --frozen python -m pytest backend/tests -q --basetemp .pytest_local_run`. Do not point `--basetemp` at a folder containing files you want to keep.
+
+### Updating a local installation
+
+Stop Uvicorn, back up any populated database using a safe method described below, then pull the desired version. Run `uv sync --frozen`, `alembic upgrade head` through the project Python environment, and `npm ci` / `npm run build` in `frontend/`. Restart Uvicorn from the repository root. Preserve your local `.env` and database.
+
+### Troubleshooting
+
+- `/` returns `Not Found`: build the frontend, then restart Uvicorn from the repository root.
+- `no such table`: run `uv run --frozen python -m alembic upgrade head` from that root.
+- No import controls: create and select a company first.
+- Image or scanned PDF cannot be read: configure a supported AI provider and model; mock does not provide OCR.
+- Address already in use: select a free port and adjust `VITE_API_PROXY_TARGET` for Vite development.
+
 ## Database migrations
 
 For a new database, set `DATABASE_URL` in `.env` and run `alembic upgrade head` before starting the API. Back up any populated database before a future schema upgrade. SQLite files, local `.env` files, and generated test files are ignored by Git.
@@ -102,4 +148,10 @@ The separate `python -m backend.alembic.upgrade_legacy` command exists only for 
 - `backend/fixtures/`: synthetic Excel import samples.
 - `frontend/src/`: React operator workspace, API client, pages, and UI tests.
 
-See [AGENTS.md](AGENTS.md) for repository working conventions.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development and review instructions, [AGENTS.md](AGENTS.md) for agent working conventions, and [SECURITY.md](SECURITY.md) for security and data handling.
+
+## License and author
+
+Copyright 2026 Lazaros Avramidis ([alexneverland](https://github.com/alexneverland)).
+
+OrderMind is licensed under the [Apache License, Version 2.0](LICENSE). Commercial use and modified distributions are permitted subject to its terms; publishing modifications is not required. See [NOTICE](NOTICE) for project attribution. Third-party dependencies retain their own licenses. This license does not grant rights to use the author's trademarks.

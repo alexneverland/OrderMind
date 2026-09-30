@@ -1,3 +1,6 @@
+# Copyright 2026 Lazaros Avramidis (alexneverland)
+# SPDX-License-Identifier: Apache-2.0
+
 from contextlib import asynccontextmanager
 import sqlite3
 from pathlib import Path

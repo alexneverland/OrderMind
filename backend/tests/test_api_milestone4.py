@@ -21,7 +21,7 @@ def setup_milestone4_api_data(db_session):
         company_id=company.id,
         customer_code="CUST-DELI",
         customer_name="Athens Deli Taverna",
-        email="info@athensdeli.gr"
+        email="info@demo-deli.test"
     )
     db_session.add(customer)
     db_session.flush()

@@ -2,7 +2,12 @@
   "name": "ordermind-operator",
   "private": true,
   "version": "0.1.0",
+  "license": "Apache-2.0",
+  "author": "Lazaros Avramidis (alexneverland)",
   "type": "module",
+  "engines": {
+    "node": "^20.19.0 || ^22.12.0 || >=24.0.0"
+  },
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "tsc -b && vite build",
@@ -24,6 +29,6 @@
     "prettier": "^3.9.9",
     "typescript": "~5.9.2",
     "vite": "^7.1.0",
-    "vitest": "^3.2.4"
+    "vitest": "4.1.11"
   }
 }
