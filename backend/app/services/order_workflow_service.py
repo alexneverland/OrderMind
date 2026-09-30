@@ -578,6 +578,7 @@ class OrderWorkflowService:
                         "quantity_output_unit": profile.quantity_output_unit,
                         "convert_case_using_pieces_per_case": profile.convert_case_using_pieces_per_case,
                         "include_header": profile.include_header,
+                        "palletization": profile.palletization,
                     }
                     for profile in db.execute(select(ExportProfile).where(ExportProfile.company_id == order.company_id)).scalars()
                 },
@@ -621,6 +622,9 @@ class OrderWorkflowService:
                         "package_code": l.matched_packaging.package_code if l.matched_packaging else None,
                         "packaging_barcode": l.matched_packaging.packaging_barcode if l.matched_packaging else None,
                         "pieces_per_case": l.matched_packaging.pieces_per_case if l.matched_packaging else None,
+                        "product_id": l.matched_product_id,
+                        "kg_per_piece": str(l.matched_product.kg_per_piece) if l.matched_product and l.matched_product.kg_per_piece is not None else None,
+                        "kg_per_case": str(l.matched_packaging.kg_per_case) if l.matched_packaging and l.matched_packaging.kg_per_case is not None else None,
                     }
                     for l in sorted(order.lines, key=lambda x: x.line_number)
                 ]

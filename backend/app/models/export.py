@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, ForeignKeyConstraint, UniqueConstraint, func
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, ForeignKeyConstraint, UniqueConstraint, JSON, func
 from sqlalchemy.orm import relationship
 from backend.app.core.database import Base
 
@@ -18,6 +18,7 @@ class ExportProfile(Base):
     bonus_marker = Column(String(20), nullable=True)
     quantity_output_unit = Column(String(20), nullable=False, default="source", server_default="source")
     convert_case_using_pieces_per_case = Column(Boolean, nullable=False, default=False, server_default="0")
+    palletization = Column(JSON, nullable=False, default=lambda: {"enabled": False}, server_default='{"enabled": false}')
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     # Relationships

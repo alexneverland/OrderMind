@@ -40,15 +40,36 @@ def convert_order_sheet_quantities(
                 raise OrderExportError("A valid case packaging ratio is required")
         elif output_unit != "source":
             raise OrderExportError("Unsupported case output unit")
-    elif unit not in {"piece", "kg"}:
+    elif unit not in {"piece", "kg", "pallet"}:
         raise OrderExportError(f"Unsupported order sheet unit '{unit}'")
-    elif output_unit == "piece" and unit == "kg":
-        raise OrderExportError("Kilograms cannot be converted to pieces without a proven product ratio")
+    elif output_unit == "piece" and unit in {"kg", "pallet"}:
+        raise OrderExportError(f"{unit} cannot be converted to pieces without a proven product ratio")
     paid = quantity * factor
     gift = bonus_quantity * factor
     if not math.isfinite(paid) or paid <= 0 or not math.isfinite(gift) or gift < 0:
         raise OrderExportError("Invalid converted quantities")
     return paid, gift, unit if output_unit == "source" else "piece"
+
+
+def expand_order_sheet_item(item: dict, profile_policy: dict, business_policy: dict, line_number: int) -> List[List[Any]]:
+    """Single source of truth for rendered product rows and planner row capacity."""
+    try:
+        paid, gift, _ = convert_order_sheet_quantities(
+            item["quantity"], item.get("bonus_quantity") or 0, item["unit"],
+            item.get("pieces_per_case"), profile_policy["quantity_output_unit"],
+            profile_policy["convert_case_using_pieces_per_case"],
+            business_policy["allow_packaging_conversion"],
+        )
+    except OrderExportError as exc:
+        raise OrderExportError(f"Line {line_number}: {exc}") from exc
+    sku = sanitize_formula_injection(item["sku"])
+    description = sanitize_formula_injection(item["description"])
+    rows = [[sku, description, "", paid]]
+    if gift:
+        if not profile_policy["bonus_separate_row"]:
+            raise OrderExportError(f"Line {line_number}: profile does not define how to export bonus goods")
+        rows.append([sku, description, profile_policy["bonus_marker"], gift])
+    return rows
 
 
 def _order_sheet_rows(db: Session, order: Order, sorted_lines: List[Any], profile: ExportProfile) -> List[List[Any]]:
@@ -66,23 +87,7 @@ def _order_sheet_rows(db: Session, order: Order, sorted_lines: List[Any], profil
             "bonus_quantity": line.final_bonus_quantity if line.final_bonus_quantity is not None else line.bonus_quantity,
             "pieces_per_case": line.matched_packaging.pieces_per_case if line.matched_packaging else None,
         }
-        try:
-            paid, gift, _ = convert_order_sheet_quantities(
-                item["quantity"], item.get("bonus_quantity") or 0,
-                item["unit"], item.get("pieces_per_case"),
-                profile_policy["quantity_output_unit"],
-                profile_policy["convert_case_using_pieces_per_case"],
-                business_policy["allow_packaging_conversion"],
-            )
-        except OrderExportError as exc:
-            raise OrderExportError(f"Line {line.line_number}: {exc}") from exc
-        sku = sanitize_formula_injection(item["sku"])
-        description = sanitize_formula_injection(item["description"])
-        rows.append([sku, description, "", paid])
-        if gift:
-            if not profile_policy["bonus_separate_row"]:
-                raise OrderExportError(f"Line {line.line_number}: profile does not define how to export bonus goods")
-            rows.append([sku, description, profile_policy["bonus_marker"], gift])
+        rows.extend(expand_order_sheet_item(item, profile_policy, business_policy, line.line_number))
     return rows
 
 
@@ -97,11 +102,11 @@ def profile_policy_for_order(order: Order, profile: ExportProfile) -> dict:
             and profile.format == "order_sheet" and profile.created_at and order.approved_at
             and profile.created_at <= order.approved_at):
         return {"bonus_separate_row": True, "bonus_marker": "Α", "quantity_output_unit": "piece",
-                "convert_case_using_pieces_per_case": True, "include_header": False}
+                "convert_case_using_pieces_per_case": True, "include_header": False, "palletization": {"enabled": False}}
     return {"bonus_separate_row": profile.bonus_separate_row, "bonus_marker": profile.bonus_marker,
             "quantity_output_unit": profile.quantity_output_unit,
             "convert_case_using_pieces_per_case": profile.convert_case_using_pieces_per_case,
-            "include_header": profile.include_header}
+            "include_header": profile.include_header, "palletization": profile.palletization}
 
 
 def business_policy_for_order(db: Session, order: Order) -> dict:
@@ -184,7 +189,8 @@ class ExportEngine:
             ):
                 raise OrderExportError("Approved order lines differ from export snapshot")
 
-        if fmt == "order_sheet":
+        palletized = fmt == "order_sheet" and bool(profile_policy_for_order(order, profile).get("palletization", {}).get("enabled"))
+        if fmt == "order_sheet" and not palletized:
             data_rows = _order_sheet_rows(db, order, sorted_lines, profile)
         else:
             for line in sorted_lines:
@@ -200,7 +206,13 @@ class ExportEngine:
         slug = re.sub(r"[^a-zA-Z0-9_\-]", "_", profile.name.lower()).strip("_")
         now_date = datetime.now(timezone.utc).strftime("%Y%m%d")
 
-        if fmt in ("excel", "xlsx", "order_sheet"):
+        if palletized:
+            from backend.app.services.pallet_planner import plan_for_order
+            from backend.app.services.pallet_renderer import render_pallet_plan
+            plan, config = plan_for_order(db, order, profile)
+            file_bytes, media_type, filename = render_pallet_plan(
+                order.id, plan, config, profile_policy_for_order(order, profile)["include_header"])
+        elif fmt in ("excel", "xlsx", "order_sheet"):
             wb = openpyxl.Workbook()
             ws = wb.active
             ws.title = "Order"

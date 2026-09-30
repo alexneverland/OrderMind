@@ -4,6 +4,8 @@ from sqlalchemy import select
 
 from backend.app.models.export import ExportProfile, ExportFieldMapping
 from backend.app.models.company import Company
+from backend.app.models.product import Product
+from backend.app.schemas.pallet import PalletConfig
 from backend.app.schemas.export import (
     ExportProfileCreate,
     ExportProfileUpdate,
@@ -25,6 +27,17 @@ class ExportProfileService:
     SUPPORTED_FORMATS = {"excel", "xlsx", "csv", "json", "order_sheet"}
     SUPPORTED_DELIMITERS = {",", ";", "\t", "|"}
     SUPPORTED_ENCODINGS = {"utf-8", "utf-8-sig", "windows-1253", "iso-8859-7", "latin1", "ascii"}
+
+    @staticmethod
+    def validate_palletization(db: Session, company_id: int, fmt: str, config: PalletConfig) -> None:
+        if config.enabled and fmt != "order_sheet":
+            raise ExportProfileValidationError("Pallet planning requires order_sheet format")
+        ids = {pid for group in config.dedicated_groups for pid in group.product_ids}
+        if ids:
+            found = set(db.execute(select(Product.id).where(Product.company_id == company_id,
+                Product.active.is_(True), Product.id.in_(ids))).scalars())
+            if found != ids:
+                raise ExportProfileValidationError("Dedicated pallet products must belong to this company")
 
     @classmethod
     def validate_order_sheet_policy(cls, fmt, separate, marker, output_unit, convert):
@@ -101,6 +114,7 @@ class ExportProfileService:
             cls.validate_profile_mappings(payload.mappings)
         cls.validate_order_sheet_policy(fmt, payload.bonus_separate_row, payload.bonus_marker,
                                         payload.quantity_output_unit, payload.convert_case_using_pieces_per_case)
+        cls.validate_palletization(db, payload.company_id, fmt, payload.palletization)
 
         profile = ExportProfile(
             company_id=payload.company_id,
@@ -113,6 +127,7 @@ class ExportProfileService:
             bonus_marker=payload.bonus_marker,
             quantity_output_unit=payload.quantity_output_unit,
             convert_case_using_pieces_per_case=payload.convert_case_using_pieces_per_case,
+            palletization=payload.palletization.model_dump(mode="json"),
         )
         db.add(profile)
         db.flush()
@@ -183,6 +198,11 @@ class ExportProfileService:
                     raise ExportProfileValidationError(f"{field} cannot be null")
                 setattr(profile, field, value)
 
+        if "palletization" in payload.model_fields_set:
+            if payload.palletization is None:
+                raise ExportProfileValidationError("palletization cannot be null")
+            profile.palletization = payload.palletization.model_dump(mode="json")
+
         if payload.mappings is not None:
             if profile.format == "order_sheet":
                 if payload.mappings:
@@ -211,6 +231,7 @@ class ExportProfileService:
             raise ExportProfileValidationError("Export profile must define at least one column mapping")
         cls.validate_order_sheet_policy(profile.format, profile.bonus_separate_row, profile.bonus_marker,
                                         profile.quantity_output_unit, profile.convert_case_using_pieces_per_case)
+        cls.validate_palletization(db, profile.company_id, profile.format, PalletConfig.model_validate(profile.palletization))
 
         db.commit()
         db.refresh(profile)

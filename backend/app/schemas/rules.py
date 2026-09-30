@@ -4,6 +4,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from backend.app.schemas.business_settings import BusinessSettingsValues
+from backend.app.schemas.pallet import PalletProposalDraft, ResolvedPalletProposal
 
 Unit = Literal["piece", "case", "kg", "pallet"]
 TriggerMode = Literal["greater_than", "greater_or_equal", "per_quantity"]
@@ -70,6 +71,11 @@ class ExportPatch(StrictModel):
     quantity_output_unit: Literal["source", "piece"] | None = None
     convert_case_using_pieces_per_case: bool | None = None
     profile_id: int | None = Field(default=None, gt=0)
+    palletization: PalletProposalDraft | None = None
+
+
+class ResolvedExportPatch(ExportPatch):
+    palletization: ResolvedPalletProposal | None = None
 
 
 class QuantityRuleDraft(StrictModel):
@@ -105,7 +111,7 @@ class ResolvedQuantityRule(QuantityRuleDraft):
 class RulesProposal(StrictModel):
     settings_patch: SettingsPatch = Field(default_factory=SettingsPatch)
     quantity_rules: list[ResolvedQuantityRule] = Field(default_factory=list, max_length=20)
-    export_patch: ExportPatch | None = None
+    export_patch: ResolvedExportPatch | None = None
     export_profile_candidates: list[RuleCandidate] = Field(default_factory=list)
     unsupported_rules: list[UnsupportedRule] = Field(default_factory=list)
 

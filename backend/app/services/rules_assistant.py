@@ -18,7 +18,19 @@ Modes: greater_than (strict >), greater_or_equal (>=), per_quantity (floor(q/N))
 Units: piece, case, kg, pallet. Trigger and reward MUST have the same unit.
 Do not invent product or customer IDs. Preserve exact SKU or customer code as reference.
 Export-specific instructions belong only in export_patch: bonus_separate_row,
-bonus_marker, quantity_output_unit (source|piece), convert_case_using_pieces_per_case.
+bonus_marker, quantity_output_unit (source|piece), convert_case_using_pieces_per_case,
+and palletization. Palletization may contain enabled, dedicated_groups with name and
+product_references (literal SKU/description from input), automatic_pallets with
+max_weight_kg and/or max_rows, row_count_mode (output_rows|logical_product_lines),
+packing_strategy=sequential, output with layout (single_sheet_sections|
+multi_sheet_workbook|separate_workbook_per_pallet), show_pallet_title,
+repeat_headers, blank_rows_between_pallets. Gift rows count separately only
+when row_count_mode=output_rows and the selected profile exports a gift row.
+Never invent a product ID, weight, SKU, capacity, or ambiguous grouping.
+At least one explicit automatic pallet capacity is required; if absent, report
+the pallet request as unsupported rather than inventing a default.
+Unsupported truck routing, 3D stacking, optimization, and uncertain rules go
+to unsupported_rules. Never claim a physical weight from product descriptions.
 Never invent a rule type, formula, discount, price, tax, or executable code.
 Put unsupported or uncertain requests into unsupported_rules with text and reason.
 An explicit 10+1 paid/free syntax maps to bonus_enabled=true and
@@ -59,6 +71,32 @@ def _mock_analysis(description: str) -> RulesAnalysis:
     if re.search(r"separate row", text) and re.search(r"free|bonus", text):
         marker = re.search(r"marker\s+([\wΑ-Ω])", description, re.I)
         export = {"bonus_separate_row": True, "bonus_marker": marker[1] if marker else "A"}
+    if re.search(r"pallet|παλέτ|παλετ", text):
+        if re.search(r"axle|3d|truck door|box orientation|δρομολόγ|άξον", text):
+            unsupported.append({"text": description[:500], "reason": "Truck and 3D logistics rules are outside pallet planning."})
+        weight = re.search(r"(?:maximum|max|up to|έως|μέχρι)\s*(\d+(?:[.,]\d+)?)\s*(?:kg|κιλ)", text)
+        rows = re.search(r"(?:maximum|max|up to|έως|μέχρι)?\s*(\d+)\s*(?:excel rows?|exported rows?|rows?|lines?|product lines?|different products?|γραμμ|σειρ)", text)
+        if weight or rows:
+            logical = bool(re.search(r"different products?|product lines?|logical|gift (?:line|row) doesn.t count|δ[εέ]ν (?:μετρ|υπολογ).*δ[ωώ]ρ", text))
+            layout = ("separate_workbook_per_pallet" if re.search(r"different excel file|separate (?:excel )?file|ξεχωριστ.*αρχε", text)
+                      else "multi_sheet_workbook" if re.search(r"different sheet|separate (?:work)?sheet|ξεχωριστ.*φ[υύ]λλ", text)
+                      else "single_sheet_sections")
+            groups = []
+            for index, match in enumerate(re.finditer(r"(?:codes?|skus?)\s+([\w,\s-]+?)\s+(?:go|must go|belong).*?(?:one|another|same) pallet", description, re.I), 1):
+                refs = [value.strip() for value in re.split(r",|\band\b", match[1], flags=re.I) if value.strip()]
+                if refs:
+                    groups.append({"name": f"Group {index}", "product_references": refs})
+            export = export or {}
+            export["palletization"] = {
+                "enabled": True, "dedicated_groups": groups,
+                "automatic_pallets": {"max_weight_kg": weight[1].replace(",", ".") if weight else None,
+                    "max_rows": int(rows[1]) if rows else None,
+                    "row_count_mode": "logical_product_lines" if logical else "output_rows", "packing_strategy": "sequential"},
+                "output": {"layout": layout, "show_pallet_title": True,
+                    "repeat_headers": False, "blank_rows_between_pallets": 1},
+            }
+        elif not unsupported:
+            unsupported.append({"text": description[:500], "reason": "Specify a pallet weight or row capacity."})
     if not settings and not rules and not export and not unsupported:
         return RulesAnalysis(unsupported_rules=[{"text": description[:500], "reason": "Mock provider could not map this to a supported rule; select a configured AI provider or use Advanced settings."}])
     return RulesAnalysis(settings_patch=settings, quantity_rules=rules, export_patch=export, unsupported_rules=unsupported)

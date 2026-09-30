@@ -85,7 +85,9 @@ export function ExcelImportPanel({
         mapping, then import into the selected company.{" "}
         {entity === "packaging"
           ? "Import products first. Identical rows are skipped; changed package codes or barcodes appear as conflicts."
-          : "Duplicate codes and invalid rows appear as errors below."}
+          : entity === "products"
+            ? "Map gross kg per piece when available. Reimporting an existing SKU with this column updates only its trusted piece weight; other duplicates remain errors."
+            : "Duplicate codes and invalid rows appear as errors below."}
       </p>
       {!companyId && (
         <p className="import-prerequisite">

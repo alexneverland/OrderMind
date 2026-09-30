@@ -31,9 +31,18 @@ export const createProduct = (payload: {
   sku: string;
   description: string;
   barcode?: string;
-  unit: string;
+    unit: string;
+    kg_per_piece?: number | null;
 }) =>
   request<Product>("/products", {
     method: "POST",
     body: JSON.stringify(payload),
+  });
+export const setProductWeight = (companyId: number, productId: number, kgPerPiece: number | null) =>
+  request<Product>(`/products/${productId}/physical-weight`, {
+    method: "PUT", body: JSON.stringify({ company_id: companyId, kg_per_piece: kgPerPiece }),
+  });
+export const setPackagingWeight = (companyId: number, packagingId: number, kgPerCase: number | null) =>
+  request(`/products/packaging/${packagingId}/physical-weight`, {
+    method: "PUT", body: JSON.stringify({ company_id: companyId, kg_per_case: kgPerCase }),
   });

@@ -1,5 +1,6 @@
 import io
 import math
+from decimal import Decimal, InvalidOperation
 from typing import Dict, List, Any, Optional
 import pandas as pd
 from sqlalchemy.orm import Session
@@ -36,6 +37,11 @@ HEURISTIC_SYNONYMS: Dict[str, Dict[str, List[str]]] = {
         ]
     },
     "products": {
+        "kg_per_piece": [
+            "kg_per_piece", "gross_kg_per_piece", "gross_weight_per_piece",
+            "μικτο_βαρος", "μικτό_βάρος", "μικτο_βαροσ", "μικτο_βαρος_κιλα",
+            "μικτό_βάρος_ανά_τεμάχιο", "βαρος_ανα_τεμαχιο",
+        ],
         "sku": [
             "sku", "item_code", "itemcode", "product_code", "κωδικος", "κωδ_ειδους",
             "κωδικος_ειδους", "ειδος_κωδικος", "code", "κωδ", "κωδικοσ"
@@ -87,7 +93,7 @@ REQUIRED_TARGET_FIELDS = {
 
 SUPPORTED_TARGET_FIELDS = {
     "customers": ["customer_code", "customer_name", "email", "phone", "active"],
-    "products": ["sku", "description", "barcode", "unit", "active"],
+    "products": ["sku", "description", "barcode", "unit", "active", "kg_per_piece"],
     "packaging": ["product_sku", "package_type", "pieces_per_case", "weight", "unit", "package_code", "packaging_barcode"],
 }
 
@@ -332,6 +338,7 @@ class MasterDataService:
         # Pre-fetch existing product SKUs for this company
         existing_skus_query = select(Product.sku).where(Product.company_id == company_id)
         existing_skus = set(db.execute(existing_skus_query).scalars().all())
+        existing_products = {p.sku: p for p in db.execute(select(Product).where(Product.company_id == company_id)).scalars()}
 
         seen_in_batch = set()
 
@@ -344,12 +351,23 @@ class MasterDataService:
             barcode_col = mapping.get("barcode")
             unit_col = mapping.get("unit")
             active_col = mapping.get("active")
+            gross_col = mapping.get("kg_per_piece")
 
             sku = _clean_val(row.get(sku_col)) if sku_col else None
             description = _clean_val(row.get(desc_col)) if desc_col else None
             barcode = _clean_val(row.get(barcode_col)) if barcode_col else None
             unit = _clean_val(row.get(unit_col)) if unit_col else "piece"
             active = _clean_bool(row.get(active_col)) if active_col else True
+            gross_raw = _clean_val(row.get(gross_col)) if gross_col else None
+            try:
+                gross_weight = Decimal(gross_raw.replace(",", ".")) if gross_raw is not None else None
+            except InvalidOperation:
+                gross_weight = None
+            if gross_raw is not None and (gross_weight is None or not gross_weight.is_finite()
+                                          or gross_weight < Decimal("0.000001") or gross_weight > 1_000_000):
+                error_details.append(RowErrorDetail(row_number=row_num, field="kg_per_piece",
+                    reason="Gross kilograms per piece must be positive and finite", raw_data=row_dict))
+                continue
 
             # Validation: Missing required fields
             if not sku:
@@ -382,6 +400,15 @@ class MasterDataService:
 
             # Validation: Duplicate in database for this company
             if sku in existing_skus:
+                if gross_col and gross_weight is not None:
+                    existing = existing_products[sku]
+                    if existing.kg_per_piece is None or existing.kg_per_piece != gross_weight:
+                        existing.kg_per_piece = gross_weight
+                        imported += 1
+                    else:
+                        skipped += 1
+                    seen_in_batch.add(sku)
+                    continue
                 error_details.append(RowErrorDetail(
                     row_number=row_num,
                     field="sku",
@@ -396,6 +423,7 @@ class MasterDataService:
                 description=description,
                 barcode=barcode,
                 unit=unit or "piece",
+                kg_per_piece=gross_weight,
                 active=active
             )
             db.add(product)

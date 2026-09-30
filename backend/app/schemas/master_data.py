@@ -1,4 +1,4 @@
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from datetime import datetime
 from typing import Optional, List
 
@@ -46,6 +46,7 @@ class PackagingBase(BaseModel):
     package_type: str
     pieces_per_case: float = 1.0
     weight: Optional[float] = None
+    kg_per_case: Optional[float] = Field(default=None, ge=0.000001, le=1_000_000, allow_inf_nan=False)
     unit: str = "piece"
     package_code: Optional[str] = None
     packaging_barcode: Optional[str] = None
@@ -87,6 +88,7 @@ class ProductBase(BaseModel):
     description: str
     barcode: Optional[str] = None
     unit: str = "piece"
+    kg_per_piece: Optional[float] = Field(default=None, ge=0.000001, le=1_000_000, allow_inf_nan=False)
     active: bool = True
 
 
