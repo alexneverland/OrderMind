@@ -229,8 +229,10 @@ class ExportProfileService:
 
         if profile.format != "order_sheet" and not profile.field_mappings:
             raise ExportProfileValidationError("Export profile must define at least one column mapping")
-        if profile.format == "csv" and profile.delimiter not in cls.SUPPORTED_DELIMITERS:
-            raise ExportProfileValidationError("CSV profile requires a supported single-character delimiter")
+        if profile.format == "csv":
+            profile.delimiter = profile.delimiter or ","
+            if profile.delimiter not in cls.SUPPORTED_DELIMITERS:
+                raise ExportProfileValidationError("CSV profile requires a supported single-character delimiter")
         cls.validate_order_sheet_policy(profile.format, profile.bonus_separate_row, profile.bonus_marker,
                                         profile.quantity_output_unit, profile.convert_case_using_pieces_per_case)
         cls.validate_palletization(db, profile.company_id, profile.format, PalletConfig.model_validate(profile.palletization))

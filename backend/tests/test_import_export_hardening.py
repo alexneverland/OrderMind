@@ -59,6 +59,34 @@ def test_legacy_invalid_delimiter_cannot_switch_to_csv_or_export(db_session):
         ExportEngine.export_order(db_session, order.id, profile.id)
 
 
+@pytest.mark.parametrize("delimiter", [None, ""])
+@pytest.mark.parametrize("original_format", ["csv", "xlsx"])
+def test_legacy_empty_delimiter_falls_back_on_update(client, db_session, delimiter, original_format):
+    from backend.app.models.export import ExportFieldMapping
+    company = Company(name="Synthetic delimiter tenant")
+    db_session.add(company)
+    db_session.flush()
+    profile = ExportProfile(company_id=company.id, name="Legacy synthetic", format=original_format)
+    db_session.add(profile)
+    db_session.flush()
+    db_session.add(ExportFieldMapping(export_profile_id=profile.id, column_order=1,
+        output_column_name="Code", mapping_type="constant", constant_value="Synthetic"))
+    profile_id = profile.id
+    # Set an actual legacy NULL after insertion, avoiding the ORM comma default.
+    db_session.execute(text("UPDATE export_profiles SET delimiter = :delimiter WHERE id = :id"),
+                       {"delimiter": delimiter, "id": profile_id})
+    db_session.commit()
+    db_session.expire_all()
+    payload = {"name": "Updated synthetic"}
+    if original_format != "csv":
+        payload["format"] = "csv"
+    response = client.put(f"/api/v1/export-profiles/{profile_id}", json=payload)
+    assert response.status_code == 200
+    assert response.json()["delimiter"] == ","
+    db_session.expire_all()
+    assert db_session.get(ExportProfile, profile_id).delimiter == ","
+
+
 def oversized_archive():
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
