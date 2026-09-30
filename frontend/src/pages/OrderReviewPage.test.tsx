@@ -17,6 +17,7 @@ const mock = vi.hoisted(() => ({
   updateFinalValues: vi.fn(),
   approveOrder: vi.fn(),
   exportOrder: vi.fn(),
+  getPalletPreview: vi.fn(),
   getProducts: vi.fn(),
   getProfiles: vi.fn(),
   saveDownload: vi.fn(),
@@ -28,6 +29,7 @@ vi.mock("../api/orders", () => ({
   updateFinalValues: mock.updateFinalValues,
   approveOrder: mock.approveOrder,
   exportOrder: mock.exportOrder,
+  getPalletPreview: mock.getPalletPreview,
 }));
 vi.mock("../api/masterData", () => ({ getProducts: mock.getProducts }));
 vi.mock("../api/exportProfiles", () => ({ getProfiles: mock.getProfiles }));
@@ -131,11 +133,27 @@ beforeEach(() => {
     blob: new Blob(["x"]),
     filename: "order.xlsx",
   });
+  mock.getPalletPreview.mockResolvedValue({ layout: "single_sheet_sections", row_count_mode: "output_rows", pallets: [
+    { pallet_number: 1, type: "automatic", group_name: null, total_weight_kg: "12", row_count: 2,
+      warnings: [], items: [{ source_order_line_id: 7, sku: "7843", description: "Smoked turkey", paid_quantity: "10", bonus_quantity: "1", unit: "piece", weight_kg: "12", output_row_count: 2 }] },
+  ] });
   vi.spyOn(window, "confirm").mockReturnValue(true);
 });
 afterEach(() => vi.restoreAllMocks());
 
 describe("operator review", () => {
+  it("shows pallet assignments before export download", async () => {
+    current.status = "approved";
+    current.approved_at = "2026-09-28T11:00:00";
+    mock.getProfiles.mockResolvedValue([{ id: 20, name: "Pallet sheet", format: "order_sheet" }]);
+    show();
+    await screen.findByRole("option", { name: "Pallet sheet · ORDER_SHEET" });
+    fireEvent.change(screen.getByRole("combobox", { name: "Export profile" }), { target: { value: "20" } });
+    fireEvent.click(await screen.findByRole("button", { name: "Preview pallets" }));
+    expect(await screen.findByRole("region", { name: "Pallet preview" })).toHaveTextContent("7843");
+    expect(mock.getPalletPreview).toHaveBeenCalledWith(1, 20);
+    expect(mock.exportOrder).not.toHaveBeenCalled();
+  });
   it("renders verbatim raw input, match and review status", async () => {
     show();
     expect(await screen.findByText("Smoked turkey")).toBeInTheDocument();

@@ -103,3 +103,14 @@ export const approveOrder = (id: number) =>
   request(`/orders/${id}/approve`, { method: "POST" });
 export const exportOrder = (orderId: number, profileId: number) =>
   download(`/orders/${orderId}/export/${profileId}`);
+export type PalletPreview = {
+  row_count_mode: "output_rows" | "logical_product_lines";
+  layout: string;
+  pallets: {
+    pallet_number: number; type: "dedicated" | "automatic"; group_name: string | null;
+    total_weight_kg: string | null; row_count: number; warnings: string[];
+    items: { source_order_line_id: number; sku: string; description: string; paid_quantity: string; bonus_quantity: string; unit: string; weight_kg: string | null; output_row_count: number }[];
+  }[];
+};
+export const getPalletPreview = (orderId: number, profileId: number) =>
+  request<PalletPreview>(`/orders/${orderId}/pallet-preview/${profileId}`);

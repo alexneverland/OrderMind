@@ -8,9 +8,11 @@ import {
   type ProfileInput,
 } from "../api/exportProfiles";
 import { useCompany } from "../components/AppShell";
+import { PalletEditor, emptyPalletConfig } from "../components/PalletEditor";
+import { getProducts } from "../api/masterData";
 import { Alert, Empty, Spinner } from "../components/ui";
 import { useAsync } from "../hooks/useAsync";
-import type { ExportProfile, Mapping } from "../types";
+import type { ExportProfile, Mapping, PalletConfig, Product } from "../types";
 
 const blankMapping = (): Mapping => ({
   column_order: 1,
@@ -40,6 +42,9 @@ function ProfileEditor({
   const [bonusSeparateRow, setBonusSeparateRow] = useState(profile?.bonus_separate_row ?? false);
   const [bonusMarker, setBonusMarker] = useState(profile?.bonus_marker ?? "");
   const [quantityOutputUnit, setQuantityOutputUnit] = useState<"source" | "piece">(profile?.quantity_output_unit ?? "source");
+  const [palletization, setPalletization] = useState<PalletConfig>(profile?.palletization ?? emptyPalletConfig());
+  const [products, setProducts] = useState<Product[]>([]);
+  useEffect(() => { void getProducts(companyId).then(setProducts).catch(() => setProducts([])); }, [companyId]);
   const [mappings, setMappings] = useState<Mapping[]>(
     profile?.field_mappings.map(
       ({
@@ -86,6 +91,7 @@ function ProfileEditor({
       bonus_marker: format === "order_sheet" && bonusSeparateRow ? bonusMarker : null,
       quantity_output_unit: format === "order_sheet" ? quantityOutputUnit : "source",
       convert_case_using_pieces_per_case: format === "order_sheet" && quantityOutputUnit === "piece",
+      palletization: format === "order_sheet" ? palletization : emptyPalletConfig(),
       mappings: format === "order_sheet" ? [] : mappings.map((m, i) => ({
         ...m,
         column_order: i + 1,
@@ -205,6 +211,7 @@ function ProfileEditor({
                   <option value="piece">Pieces (convert cases using pieces per case)</option>
                 </select>
               </label>
+              <PalletEditor value={palletization} products={products} onChange={setPalletization} />
             </div>
           )}
           {format !== "order_sheet" && <>
@@ -425,6 +432,12 @@ export function ProfilesPage() {
                   <tr key={p.id}>
                     <td>
                       <strong>{p.name}</strong>
+                      {p.palletization?.enabled && <small style={{ display: "block" }}>
+                        Pallets: {p.palletization.dedicated_groups.length} dedicated groups ·
+                        {p.palletization.automatic_pallets.max_weight_kg ? ` ${p.palletization.automatic_pallets.max_weight_kg} kg` : ""}
+                        {p.palletization.automatic_pallets.max_rows ? ` · ${p.palletization.automatic_pallets.max_rows} ${p.palletization.automatic_pallets.row_count_mode.replaceAll("_", " ")}` : ""}
+                        {` · ${p.palletization.output.layout.replaceAll("_", " ")}`}
+                      </small>}
                     </td>
                     <td>{p.format.toUpperCase()}</td>
                     <td>{p.field_mappings.length}</td>

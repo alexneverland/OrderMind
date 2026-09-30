@@ -25,7 +25,7 @@ def test_fresh_sqlite_database_reaches_model_head(tmp_path: Path):
     _alembic(database, "check")
     with sqlite3.connect(database) as connection:
         connection.execute("PRAGMA foreign_keys=ON")
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("a7b9c20014",)
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("b8c9d20015",)
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
         connection.execute("INSERT INTO companies (id,name) VALUES (1,'A'),(2,'B')")
         connection.execute("INSERT INTO products (id,company_id,sku,description,unit,active) VALUES (1,1,'SKU-A','Product A','piece',1)")
@@ -36,6 +36,22 @@ def test_fresh_sqlite_database_reaches_model_head(tmp_path: Path):
             connection.execute("""INSERT INTO company_rules
                 (company_id,rule_type,fingerprint,enabled,product_id,configuration)
                 VALUES (2,'quantity_bonus','foreign',1,1,'{}')""")
+
+
+def test_populated_previous_head_upgrades_with_neutral_pallet_policy(tmp_path: Path):
+    database = tmp_path / "previous.sqlite"
+    _alembic(database, "upgrade", "a7b9c20014")
+    with sqlite3.connect(database) as connection:
+        connection.execute("INSERT INTO companies (id,name) VALUES (1,'Existing')")
+        connection.execute("INSERT INTO products (id,company_id,sku,description,unit,active) VALUES (1,1,'SKU','Product','piece',1)")
+        connection.execute("INSERT INTO export_profiles (id,company_id,name,format,include_header,encoding) VALUES (1,1,'Sheet','order_sheet',0,'utf-8')")
+    _alembic(database, "upgrade", "head")
+    _alembic(database, "check")
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT palletization FROM export_profiles WHERE id=1").fetchone() == ('{"enabled": false}',)
+        assert connection.execute("SELECT kg_per_piece FROM products WHERE id=1").fetchone() == (None,)
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
 
 
 def test_existing_companies_and_order_sheets_get_explicit_compatibility_policy(tmp_path: Path):

@@ -15,11 +15,13 @@ export type Product = {
   description: string;
   barcode: string | null;
   unit: string;
+  kg_per_piece: number | null;
   active: boolean;
   packagings: {
     id: number;
     package_type: string;
     pieces_per_case: number;
+    kg_per_case: number | null;
     unit: string;
     package_code: string | null;
     packaging_barcode: string | null;
@@ -117,6 +119,22 @@ export type Mapping = {
   source_field: string | null;
   constant_value: string | null;
 };
+export type PalletConfig = {
+  enabled: boolean;
+  dedicated_groups: { name: string; product_ids: number[] }[];
+  automatic_pallets: {
+    max_weight_kg: number | null;
+    max_rows: number | null;
+    row_count_mode: "output_rows" | "logical_product_lines";
+    packing_strategy: "sequential";
+  };
+  output: {
+    layout: "single_sheet_sections" | "multi_sheet_workbook" | "separate_workbook_per_pallet";
+    show_pallet_title: boolean;
+    repeat_headers: boolean;
+    blank_rows_between_pallets: number;
+  };
+};
 export type ExportProfile = {
   id: number;
   company_id: number;
@@ -129,5 +147,6 @@ export type ExportProfile = {
   bonus_marker: string | null;
   quantity_output_unit: "source" | "piece";
   convert_case_using_pieces_per_case: boolean;
+  palletization: PalletConfig;
   field_mappings: (Mapping & { id: number })[];
 };

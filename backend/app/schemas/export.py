@@ -2,6 +2,7 @@ from pydantic import BaseModel, Field, ConfigDict, field_validator
 from typing import List, Optional
 from datetime import datetime
 from enum import Enum
+from backend.app.schemas.pallet import PalletConfig
 
 
 class ExportFormat(str, Enum):
@@ -49,6 +50,7 @@ class ExportProfileCreate(BaseModel):
     bonus_marker: Optional[str] = Field(default=None, max_length=20)
     quantity_output_unit: str = "source"
     convert_case_using_pieces_per_case: bool = False
+    palletization: PalletConfig = Field(default_factory=PalletConfig)
 
 
 class ExportProfileUpdate(BaseModel):
@@ -62,6 +64,7 @@ class ExportProfileUpdate(BaseModel):
     bonus_marker: Optional[str] = Field(default=None, max_length=20)
     quantity_output_unit: Optional[str] = None
     convert_case_using_pieces_per_case: Optional[bool] = None
+    palletization: PalletConfig | None = None
 
 
 class ExportProfileResponse(BaseModel):
@@ -78,5 +81,6 @@ class ExportProfileResponse(BaseModel):
     bonus_marker: Optional[str]
     quantity_output_unit: str
     convert_case_using_pieces_per_case: bool
+    palletization: PalletConfig
     created_at: datetime
     field_mappings: List[ExportFieldMappingResponse] = Field(default_factory=list)

@@ -50,7 +50,7 @@ def test_pre_alembic_database_upgrades_without_losing_pending_orders(tmp_path: P
         connection.execute("PRAGMA foreign_keys=ON")
         assert connection.execute("SELECT order_number,version FROM orders WHERE id=1").fetchone() == ("LEG-1", 1)
         assert connection.execute("SELECT normalized_description FROM products WHERE id=1").fetchone() == ("legacy product",)
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("a7b9c20014",)
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("b8c9d20015",)
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
 
 

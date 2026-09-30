@@ -6,6 +6,8 @@ import {
   correctLine,
   exportOrder,
   getOrder,
+  getPalletPreview,
+  type PalletPreview,
   updateFinalValues,
 } from "../api/orders";
 import { getProducts } from "../api/masterData";
@@ -445,6 +447,8 @@ export function OrderReviewPage() {
   );
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [palletPreview, setPalletPreview] = useState<PalletPreview | null>(null);
+  useEffect(() => setPalletPreview(null), [profileId, order?.id, order?.status]);
   useEffect(() => {
     if (!previewProfileId) {
       const first = profiles?.find((p) => p.format === "order_sheet");
@@ -646,9 +650,28 @@ export function OrderReviewPage() {
                 >
                   {busy ? <Spinner /> : "Export & download"}
                 </button>
+                {profiles?.find((p) => p.id === Number(profileId))?.format === "order_sheet" && <button
+                  className="button" disabled={busy} onClick={() => {
+                    setError("");
+                    void getPalletPreview(order.id, Number(profileId)).then(setPalletPreview)
+                      .catch((cause) => { setPalletPreview(null); setError((cause as Error).message); });
+                  }}>Preview pallets</button>}
               </div>
             </section>
           )}
+          {palletPreview && <section className="panel padded" aria-label="Pallet preview">
+            <h3>Pallet preview · {palletPreview.layout.replaceAll("_", " ")}</h3>
+            {palletPreview.pallets.map((pallet) => <div className="candidate" key={pallet.pallet_number}>
+              <strong>Pallet {pallet.pallet_number} · {pallet.type === "dedicated" ? pallet.group_name : "Automatic"}</strong>
+              <p>Weight: {pallet.total_weight_kg ?? "unknown"} kg · {pallet.row_count} {palletPreview.row_count_mode.replaceAll("_", " ")}</p>
+              {pallet.warnings.map((warning, index) => <p role="alert" key={index}>{warning}</p>)}
+              <ul>{pallet.items.map((item, index) => <li key={`${item.source_order_line_id}-${index}`}>
+                {item.sku} · {item.description} · {item.paid_quantity} {item.unit}
+                {Number(item.bonus_quantity) > 0 ? ` + ${item.bonus_quantity} free` : ""}
+                {` · ${item.weight_kg ?? "unknown"} kg · ${item.output_row_count} output rows`}
+              </li>)}</ul>
+            </div>)}
+          </section>}
           {!!order.export_records.length && (
             <section className="panel padded">
               <h3>Export history</h3>

@@ -1,4 +1,5 @@
 import { request } from "./client";
+import type { PalletConfig } from "../types";
 
 export type Unit = "piece" | "case" | "kg" | "pallet";
 export type TriggerMode = "greater_than" | "greater_or_equal" | "per_quantity";
@@ -34,6 +35,9 @@ export type RulesProposal = {
     bonus_marker?: string | null;
     quantity_output_unit?: "source" | "piece";
     convert_case_using_pieces_per_case?: boolean;
+    palletization?: Omit<PalletConfig, "dedicated_groups"> & {
+      dedicated_groups: { name: string; products: { reference: string; product_id: number | null; candidates: Candidate[] }[] }[];
+    };
   } | null;
   export_profile_candidates: Candidate[];
   unsupported_rules: { text: string; reason: string }[];

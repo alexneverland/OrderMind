@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
 import { getCustomers, getProducts } from "../api/masterData";
+import { getProfiles } from "../api/exportProfiles";
 import {
   analyzeRules, applyRules, createRule, disableRule, getCompanyRules, updateRule,
   type CompanyRule, type QuantityBonusConfig, type RulesProposal, type TriggerMode, type Unit,
 } from "../api/rules";
 import type { BusinessSettings } from "../api/businessSettings";
-import type { Customer, Product } from "../types";
+import type { Customer, Product, ExportProfile } from "../types";
 import { Alert, Spinner } from "./ui";
 
 const emptyConfig: QuantityBonusConfig = {
@@ -32,6 +33,7 @@ export function CompanyRulesWorkspace({ companyId, business, onBusinessChanged, 
   const [rules, setRules] = useState<CompanyRule[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
+  const [profiles, setProfiles] = useState<ExportProfile[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
@@ -43,13 +45,14 @@ export function CompanyRulesWorkspace({ companyId, business, onBusinessChanged, 
 
   useEffect(() => {
     let active = true;
-    setRules([]); setProducts([]); setCustomers([]); setProposal(null);
+    setRules([]); setProducts([]); setCustomers([]); setProfiles([]); setProposal(null);
     setDescription(""); setError(""); setMessage(""); setEditId(null); setPromotionEditorOpen(false);
     void Promise.all([getCompanyRules(companyId), getProducts(companyId), getCustomers(companyId)])
       .then(([nextRules, nextProducts, nextCustomers]) => {
         if (active) { setRules(nextRules); setProducts(nextProducts); setCustomers(nextCustomers); }
       })
       .catch((cause) => { if (active) setError((cause as Error).message); });
+    void getProfiles(companyId).then((nextProfiles) => { if (active) setProfiles(nextProfiles); }).catch(() => {});
     return () => { active = false; };
   }, [companyId]);
 
@@ -66,7 +69,16 @@ export function CompanyRulesWorkspace({ companyId, business, onBusinessChanged, 
   };
   const unresolved = proposal?.quantity_rules.some((rule) =>
     (rule.product_reference && !rule.product_id) || (rule.customer_reference && !rule.customer_id)) ||
-    Boolean(proposal?.export_patch && !proposal.export_patch.profile_id);
+    Boolean(proposal?.export_patch && !proposal.export_patch.profile_id) ||
+    Boolean(proposal?.export_patch?.palletization?.dedicated_groups.some((group) => group.products.some((product) => !product.product_id)));
+  const choosePalletProduct = (groupIndex: number, productIndex: number, productId: number | null) => {
+    if (!proposal?.export_patch?.palletization) return;
+    const palletization = proposal.export_patch.palletization;
+    const groups = palletization.dedicated_groups.map((group, gi) => gi !== groupIndex ? group : {
+      ...group, products: group.products.map((product, pi) => pi === productIndex ? { ...product, product_id: productId } : product),
+    });
+    setProposal({ ...proposal, export_patch: { ...proposal.export_patch, palletization: { ...palletization, dedicated_groups: groups } } });
+  };
   const hasSupported = Boolean(proposal && (
     Object.values(proposal.settings_patch).some((value) => value !== null) ||
     proposal.quantity_rules.length || proposal.export_patch));
@@ -77,6 +89,7 @@ export function CompanyRulesWorkspace({ companyId, business, onBusinessChanged, 
       const result = await applyRules(companyId, proposal);
       onBusinessChanged(result.settings);
       await refresh();
+      void getProfiles(companyId).then(setProfiles).catch(() => {});
       setProposal(null);
       setMessage("Rules applied to this company.");
     } catch (cause) { setError((cause as Error).message); }
@@ -147,8 +160,21 @@ export function CompanyRulesWorkspace({ companyId, business, onBusinessChanged, 
       </div>)}
       {proposal.export_patch && <div className="candidate">
         <strong>✓ Order-sheet export convention</strong>
-        <p>{Object.entries(proposal.export_patch).filter(([key, value]) => key !== "profile_id" && value != null)
+        <p>{Object.entries(proposal.export_patch).filter(([key, value]) => key !== "profile_id" && key !== "palletization" && value != null)
           .map(([key, value]) => `${key.replaceAll("_", " ")}: ${value}`).join(" · ")}</p>
+        {proposal.export_patch.palletization && <div className="stack-form">
+          <strong>Pallet proposal</strong>
+          <p>Automatic: {proposal.export_patch.palletization.automatic_pallets.max_weight_kg ?? "—"} kg · {proposal.export_patch.palletization.automatic_pallets.max_rows ?? "—"} {proposal.export_patch.palletization.automatic_pallets.row_count_mode.replaceAll("_", " ")} · {proposal.export_patch.palletization.output.layout.replaceAll("_", " ")}</p>
+          {proposal.export_patch.palletization.dedicated_groups.map((group, gi) => <div key={gi}>
+            <strong>{group.name}</strong>
+            {group.products.map((product, pi) => <label key={pi}>Product {product.reference}
+              <select value={product.product_id ?? ""} onChange={(event) => choosePalletProduct(gi, pi, Number(event.target.value) || null)}>
+                <option value="">Select matching product</option>
+                {product.candidates.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.label}</option>)}
+              </select>
+            </label>)}
+          </div>)}
+        </div>}
         <label>Export profile
           <select value={proposal.export_patch.profile_id ?? ""} onChange={(event) => setProposal({ ...proposal, export_patch: { ...proposal.export_patch!, profile_id: Number(event.target.value) || null } })}>
             <option value="">Select order-sheet profile</option>
@@ -168,6 +194,12 @@ export function CompanyRulesWorkspace({ companyId, business, onBusinessChanged, 
       <div className="candidate"><strong>Missing unit</strong><p>{business.unitless_order_behavior.replaceAll("_", " ")}</p><button className="button" onClick={onEditSettings}>Edit company setting</button></div>
       <div className="candidate"><strong>Packaging conversion</strong><p>{business.allow_packaging_conversion ? "Allowed using catalog ratios" : "Disabled"}</p><button className="button" onClick={onEditSettings}>Edit company setting</button></div>
       <div className="candidate"><strong>Learn unit corrections</strong><p>{business.learn_unit_preferences ? "Enabled" : "Disabled"}</p><button className="button" onClick={onEditSettings}>Edit company setting</button></div>
+      {profiles.filter((profile) => profile.format === "order_sheet" && profile.palletization?.enabled).map((profile) => <div className="candidate" key={`pallet-${profile.id}`}>
+        <strong>Pallet planning · {profile.name}</strong>
+        {profile.palletization.dedicated_groups.map((group, index) => <p key={index}>{group.name}: {group.product_ids.map((id) => products.find((product) => product.id === id)?.sku ?? `#${id}`).join(", ")}</p>)}
+        <p>Automatic: {profile.palletization.automatic_pallets.max_weight_kg ?? "—"} kg · {profile.palletization.automatic_pallets.max_rows ?? "—"} {profile.palletization.automatic_pallets.row_count_mode.replaceAll("_", " ")}</p>
+        <p>Output: {profile.palletization.output.layout.replaceAll("_", " ")}</p>
+      </div>)}
       {rules.filter((rule) => rule.enabled).map((rule) => <div key={rule.id} className="candidate">
         <strong>Promotion · {describeRule(rule.configuration)}</strong>
         <p>Applies to: {rule.product_id ? products.find((product) => product.id === rule.product_id)?.sku || `product #${rule.product_id}` : "all products"}

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { getCustomers, getProducts } from "../api/masterData";
+import { getCustomers, getProducts, setProductWeight, setPackagingWeight } from "../api/masterData";
 import { getOrders, getOrderStats } from "../api/orders";
 import { useCompany } from "../components/AppShell";
 import { ExcelImportPanel } from "../components/ExcelImportPanel";
@@ -103,6 +103,25 @@ export function ProductsPage() {
   const { companyId, companiesLoading } = useCompany();
   const [query, setQuery] = useState("");
   const [search, setSearch] = useState("");
+  const [weightError, setWeightError] = useState("");
+  const editWeight = async (productId: number, current: number | null) => {
+    if (!companyId) return;
+    const input = window.prompt("Gross kg per piece (leave empty to clear)", current == null ? "" : String(current));
+    if (input === null) return;
+    const value = input.trim() ? Number(input) : null;
+    if (value !== null && (!Number.isFinite(value) || value < 0.000001 || value > 1_000_000)) { setWeightError("Enter gross kg per piece between 0.000001 and 1,000,000."); return; }
+    try { setWeightError(""); await setProductWeight(companyId, productId, value); await refresh(); }
+    catch (cause) { setWeightError((cause as Error).message); }
+  };
+  const editCaseWeight = async (packagingId: number, current: number | null) => {
+    if (!companyId) return;
+    const input = window.prompt("Gross kg per case (leave empty to clear)", current == null ? "" : String(current));
+    if (input === null) return;
+    const value = input.trim() ? Number(input) : null;
+    if (value !== null && (!Number.isFinite(value) || value < 0.000001 || value > 1_000_000)) { setWeightError("Enter gross kg per case between 0.000001 and 1,000,000."); return; }
+    try { setWeightError(""); await setPackagingWeight(companyId, packagingId, value); await refresh(); }
+    catch (cause) { setWeightError((cause as Error).message); }
+  };
   const { data, error, loading, refresh } = useAsync(
     () => (companyId ? getProducts(companyId, search) : Promise.resolve([])),
     [companyId, search],
@@ -113,7 +132,7 @@ export function ProductsPage() {
         <div>
           <div className="eyebrow">MASTER DATA</div>
           <h1>Products</h1>
-          <p>Search the active product catalog.</p>
+          <p>Search the active product catalog. Pallet weight uses trusted gross kilograms per piece.</p>
         </div>
         <div className="page-actions">
           <a className="button primary" href="#product-import">
@@ -140,7 +159,7 @@ export function ProductsPage() {
           />
           <button className="button">Search</button>
         </form>
-        <Alert message={error} />
+        <Alert message={error || weightError} />
         {loading ? (
           <div className="center">
             <Spinner />
@@ -156,6 +175,7 @@ export function ProductsPage() {
                   <th>Description</th>
                   <th>Barcode</th>
                   <th>Unit</th>
+                  <th>Gross kg / piece</th>
                   <th>Active</th>
                   <th>Packaging</th>
                 </tr>
@@ -169,8 +189,18 @@ export function ProductsPage() {
                     <td>{p.description}</td>
                     <td>{p.barcode || "—"}</td>
                     <td>{p.unit}</td>
+                    <td><button className="text-button" onClick={() => void editWeight(p.id, p.kg_per_piece)}>
+                      {p.kg_per_piece ?? "Set weight"}
+                    </button></td>
                     <td>{p.active ? "Yes" : "No"}</td>
-                    <td>{p.packagings?.length ?? 0}</td>
+                    <td>{p.packagings?.length ? <details><summary>{p.packagings.length} packages</summary>
+                      {p.packagings.map((packaging) => <div key={packaging.id}>
+                        {packaging.package_code || packaging.package_type} · {packaging.pieces_per_case} pieces/case ·
+                        <button className="text-button" onClick={() => void editCaseWeight(packaging.id, packaging.kg_per_case)}>
+                          {packaging.kg_per_case ?? "Set gross kg/case"}
+                        </button>
+                      </div>)}
+                    </details> : "0"}</td>
                   </tr>
                 ))}
               </tbody>

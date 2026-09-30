@@ -4,6 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.exc import StaleDataError
 from typing import List
+import re
 from pydantic import ValidationError
 
 from backend.app.core.database import get_db
@@ -15,13 +16,14 @@ from backend.app.models.export import ExportProfile
 from backend.app.schemas.business_settings import BusinessSettingsValues, BusinessSettingsResponse
 from backend.app.services.business_settings_service import effective_business_settings
 from backend.app.schemas.company import CompanyCreate, CompanyResponse
-from backend.app.schemas.rules import (AnalyzeRequest, ApplyProposalRequest, ExportPatch, QuantityBonusConfig,
+from backend.app.schemas.rules import (AnalyzeRequest, ApplyProposalRequest, ResolvedExportPatch, QuantityBonusConfig,
     ResolvedQuantityRule, RuleCandidate, RuleResponse, RuleUpdate, RuleWrite,
     RulesProposal, merged_settings)
 from backend.app.services.company_rule_service import (create_rule, refresh_pending_promotions,
     rule_fingerprint, rule_response, validate_rule_scope)
 from backend.app.services.export_profile_service import ExportProfileService
 from backend.app.services.rules_assistant import analyze_rule_description
+from backend.app.schemas.pallet import DedicatedGroup, PalletConfig, ResolvedDedicatedGroup, ResolvedPalletProposal, ResolvedProductReference
 
 router = APIRouter(prefix="/companies", tags=["Companies"])
 
@@ -88,7 +90,7 @@ def _company_or_404(db: Session, company_id: int) -> None:
 def _resolve_reference(reference: str | None, records, key, label) -> tuple[int | None, list[RuleCandidate]]:
     if not reference:
         return None, []
-    value = reference.strip().casefold()
+    value = re.sub(r"^(?:sku|product code|code|κωδικός|κωδικος)\s*[:#-]?\s*", "", reference.strip(), flags=re.I).casefold()
     exact = [row for row in records if key(row).casefold() == value or label(row).casefold() == value]
     choices = exact or [row for row in records if value in key(row).casefold() or value in label(row).casefold()]
     candidates = [RuleCandidate(id=row.id, label=f"{key(row)} · {label(row)}") for row in choices[:20]]
@@ -144,7 +146,24 @@ async def analyze_company_rules(company_id: int, payload: AnalyzeRequest, db: Se
     profiles = db.execute(select(ExportProfile).where(
         ExportProfile.company_id == company_id, ExportProfile.format == "order_sheet"
     )).scalars().all()
-    export_patch = analysis.export_patch.model_copy(update={"profile_id": profiles[0].id if len(profiles) == 1 else None}) if analysis.export_patch else None
+    export_patch = None
+    if analysis.export_patch:
+        patch_data = analysis.export_patch.model_dump(exclude={"palletization"})
+        patch_data["profile_id"] = profiles[0].id if len(profiles) == 1 else None
+        if analysis.export_patch.palletization:
+            draft = analysis.export_patch.palletization
+            groups = []
+            for group in draft.dedicated_groups:
+                references = []
+                for reference in group.product_references:
+                    product_id, candidates = _resolve_reference(reference, products, lambda row: row.sku, lambda row: row.description)
+                    references.append(ResolvedProductReference(reference=reference, product_id=product_id,
+                        candidates=[candidate.model_dump() for candidate in candidates]))
+                groups.append(ResolvedDedicatedGroup(name=group.name, products=references))
+            patch_data["palletization"] = ResolvedPalletProposal(
+                enabled=draft.enabled, dedicated_groups=groups,
+                automatic_pallets=draft.automatic_pallets, output=draft.output)
+        export_patch = ResolvedExportPatch.model_validate(patch_data)
     return RulesProposal(
         settings_patch=analysis.settings_patch, quantity_rules=quantity_rules,
         export_patch=export_patch,
@@ -179,14 +198,24 @@ def apply_company_rules(company_id: int, payload: ApplyProposalRequest, db: Sess
                 configuration=item.configuration,
             )))
         if proposal.export_patch is not None:
-            patch: ExportPatch = proposal.export_patch
+            patch: ResolvedExportPatch = proposal.export_patch
             if patch.profile_id is None:
                 raise ValueError("Select an order-sheet export profile")
             profile = db.get(ExportProfile, patch.profile_id)
             if not profile or profile.company_id != company_id or profile.format != "order_sheet":
                 raise ValueError("Export profile must be an order sheet in this company")
-            for key, value in patch.model_dump(exclude_none=True, exclude={"profile_id"}).items():
+            for key, value in patch.model_dump(exclude_none=True, exclude={"profile_id", "palletization"}).items():
                 setattr(profile, key, value)
+            if patch.palletization is not None:
+                groups = []
+                for group in patch.palletization.dedicated_groups:
+                    if any(ref.product_id is None for ref in group.products):
+                        raise ValueError(f"Resolve every product in dedicated group '{group.name}'")
+                    groups.append(DedicatedGroup(name=group.name, product_ids=[ref.product_id for ref in group.products]))
+                config = PalletConfig(enabled=patch.palletization.enabled, dedicated_groups=groups,
+                    automatic_pallets=patch.palletization.automatic_pallets, output=patch.palletization.output)
+                ExportProfileService.validate_palletization(db, company_id, profile.format, config)
+                profile.palletization = config.model_dump(mode="json")
             ExportProfileService.validate_order_sheet_policy(
                 profile.format, profile.bonus_separate_row, profile.bonus_marker,
                 profile.quantity_output_unit, profile.convert_case_using_pieces_per_case,

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, Float, DateTime, ForeignKey, UniqueConstraint, ForeignKeyConstraint, Index, func, event
+from sqlalchemy import Column, Integer, String, Boolean, Float, Numeric, DateTime, ForeignKey, UniqueConstraint, ForeignKeyConstraint, Index, func, event
 from sqlalchemy.orm import relationship
 from backend.app.core.database import Base
 
@@ -14,6 +14,7 @@ class Product(Base):
     stemmed_description = Column(String(500), nullable=False, server_default="")
     barcode = Column(String(100), nullable=True, index=True)
     unit = Column(String(50), nullable=False, default="piece")
+    kg_per_piece = Column(Numeric(16, 6), nullable=True)
     active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
@@ -80,6 +81,7 @@ class Packaging(Base):
     package_type = Column(String(100), nullable=False)  # e.g. "case", "box", "shrink", "pallet"
     pieces_per_case = Column(Float, nullable=False, default=1.0)
     weight = Column(Float, nullable=True)
+    kg_per_case = Column(Numeric(16, 6), nullable=True)
     unit = Column(String(50), nullable=False, default="piece")
 
     # Relationships

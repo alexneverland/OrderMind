@@ -1,5 +1,5 @@
 import { request } from "./client";
-import type { ExportProfile, Mapping } from "../types";
+import type { ExportProfile, Mapping, PalletConfig } from "../types";
 
 export const getProfiles = (companyId?: number) =>
   request<ExportProfile[]>(
@@ -19,6 +19,7 @@ export type ProfileInput = {
   bonus_marker?: string | null;
   quantity_output_unit?: "source" | "piece";
   convert_case_using_pieces_per_case?: boolean;
+  palletization?: PalletConfig;
 };
 export const createProfile = (input: ProfileInput) =>
   request<ExportProfile>("/export-profiles", {

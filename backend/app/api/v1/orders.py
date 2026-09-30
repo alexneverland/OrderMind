@@ -840,6 +840,23 @@ def correct_line_match_endpoint(
         )
 
 
+@router.get("/{order_id}/pallet-preview/{profile_id}")
+def preview_pallets(order_id: int, profile_id: int, db: Session = Depends(get_db)):
+    from backend.app.services.pallet_planner import plan_for_order
+    order = db.get(Order, order_id)
+    profile = db.get(ExportProfile, profile_id)
+    if not order or not profile or profile.company_id != order.company_id or profile.format != "order_sheet":
+        raise HTTPException(status_code=404, detail="Order-sheet profile not found for this order")
+    try:
+        plan, _ = plan_for_order(db, order, profile)
+        for pallet in plan["pallets"]:
+            for item in pallet["items"]:
+                item.pop("rows", None)
+        return plan
+    except (OrderExportError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.post("/{order_id}/export/{profile_id}")
 def export_order_endpoint(
     order_id: int,
