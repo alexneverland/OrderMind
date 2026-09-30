@@ -11,7 +11,7 @@ def dec(value) -> Decimal:
     return Decimal(str(value))
 
 
-def _mass_per_unit(item: dict, weight_required: bool) -> Decimal | None:
+def mass_per_unit(item: dict, weight_required: bool) -> Decimal | None:
     unit = item["unit"]
     if unit == "kg":
         return Decimal(1)
@@ -87,7 +87,7 @@ def plan_pallets(items: list[dict], config: PalletConfig, policy: dict, business
         pallet = _new_pallet("dedicated", group.name)
         for item in selected:
             paid, bonus = dec(item["quantity"]), dec(item.get("bonus_quantity") or 0)
-            mass = _mass_per_unit(item, weight_limit is not None)
+            mass = mass_per_unit(item, weight_limit is not None)
             _add(pallet, _chunk(item, paid, bonus, mass, policy, business), mode)
         if weight_limit is not None and pallet["total_weight_kg"] is not None and dec(pallet["total_weight_kg"]) > weight_limit:
             pallet["warnings"].append(f"Dedicated group exceeds automatic weight limit {weight_limit} kg")
@@ -105,7 +105,7 @@ def plan_pallets(items: list[dict], config: PalletConfig, policy: dict, business
         integer_unit = item["unit"] in {"piece", "case", "pallet"}
         if integer_unit and (total_paid != total_paid.to_integral_value() or total_bonus != total_bonus.to_integral_value()):
             raise OrderExportError(f"Cannot split SKU {item['sku']}: physical units must be whole")
-        mass = _mass_per_unit(item, weight_limit is not None)
+        mass = mass_per_unit(item, weight_limit is not None)
         remaining_paid, remaining_bonus = total_paid, total_bonus
         while remaining_paid > 0:
             def make_candidate(take: Decimal) -> dict:

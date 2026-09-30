@@ -110,6 +110,7 @@ class OrderResponse(BaseModel):
     exported_at: Optional[datetime] = None
     last_export_profile_id: Optional[int] = None
     export_records: List[ExportRecordBrief] = Field(default_factory=list)
+    pallet_profile_ids: List[int] = Field(default_factory=list)
     lines: List[OrderLineResponse] = Field(default_factory=list)
 
 
