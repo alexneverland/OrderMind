@@ -5,6 +5,7 @@ import json
 from typing import Any, Dict, List, Optional
 
 from backend.app.ai.base import BaseAIProvider
+from backend.app.ai.prompt_boundaries import OCR_SYSTEM_PROMPT, extraction_policy, untrusted_text_payload
 from backend.app.ai.gemini_provider import GeminiExtractionResponse, EXTRACTION_SYSTEM_PROMPT, GeminiProvider
 from backend.app.config import settings
 from backend.app.core.text_normalizer import resolve_unit
@@ -59,7 +60,7 @@ class OpenAIProvider(BaseAIProvider):
         try:
             response = await client.responses.create(
                 model=self.model_name,
-                instructions=system_instruction if system_instruction is not None else (EXTRACTION_SYSTEM_PROMPT if file is None else None),
+                instructions=system_instruction if system_instruction is not None else (EXTRACTION_SYSTEM_PROMPT if file is None else OCR_SYSTEM_PROMPT),
                 input=[{"role": "user", "content": content}],
                 max_output_tokens=16000,
                 store=False,
@@ -70,9 +71,10 @@ class OpenAIProvider(BaseAIProvider):
 
     async def extract_order(self, normalized_input: NormalizedInput, context: Optional[Dict[str, Any]] = None) -> List[NormalizedOrderLineDraft]:
         try:
-            bonus_policy = "Interpret paid+free syntax such as 10+1 as separate paid and bonus quantities." if (context or {}).get("bonus_expression_mode") == "paid_plus_bonus" else "A plus sign alone does not prove free goods; do not guess bonus quantities."
+            bonus_policy = extraction_policy((context or {}).get("bonus_expression_mode", "disabled"))
             return _drafts(await self._complete(
-                bonus_policy + " Return only JSON with an items array. Each item has original_text (exact substring), product_phrase, positive paid quantity, verbatim quantity_text, bonus_quantity (zero if none), and verbatim unit or null. Customer order:\n" + normalized_input.raw_text
+                untrusted_text_payload(normalized_input.raw_text),
+                system_instruction=EXTRACTION_SYSTEM_PROMPT + "\n" + bonus_policy + "\nReturn only JSON with an items array. Each item has original_text (exact substring), product_phrase, positive paid quantity, verbatim quantity_text, bonus_quantity (zero if none), and verbatim unit or null."
             ))
         except Exception as exc:
             raise RuntimeError("OpenAI extraction provider is unavailable") from exc
@@ -103,7 +105,7 @@ class AnthropicProvider(BaseAIProvider):
             response = await client.messages.create(
                 model=self.model_name,
                 max_tokens=16000,
-                system=system_instruction if system_instruction is not None else (EXTRACTION_SYSTEM_PROMPT if file is None else "Transcribe only what is visible; never infer missing text."),
+                system=system_instruction if system_instruction is not None else (EXTRACTION_SYSTEM_PROMPT if file is None else OCR_SYSTEM_PROMPT),
                 messages=[{"role": "user", "content": content}],
             )
             return "\n".join(block.text for block in response.content if block.type == "text")
@@ -112,9 +114,10 @@ class AnthropicProvider(BaseAIProvider):
 
     async def extract_order(self, normalized_input: NormalizedInput, context: Optional[Dict[str, Any]] = None) -> List[NormalizedOrderLineDraft]:
         try:
-            bonus_policy = "Interpret paid+free syntax such as 10+1 as separate paid and bonus quantities." if (context or {}).get("bonus_expression_mode") == "paid_plus_bonus" else "A plus sign alone does not prove free goods; do not guess bonus quantities."
+            bonus_policy = extraction_policy((context or {}).get("bonus_expression_mode", "disabled"))
             return _drafts(await self._complete(
-                bonus_policy + " Return only JSON with an items array. Each item has original_text (exact substring), product_phrase, positive paid quantity, verbatim quantity_text, bonus_quantity (zero if none), and verbatim unit or null. Customer order:\n" + normalized_input.raw_text
+                untrusted_text_payload(normalized_input.raw_text),
+                system_instruction=EXTRACTION_SYSTEM_PROMPT + "\n" + bonus_policy + "\nReturn only JSON with an items array. Each item has original_text (exact substring), product_phrase, positive paid quantity, verbatim quantity_text, bonus_quantity (zero if none), and verbatim unit or null."
             ))
         except Exception as exc:
             raise RuntimeError("Anthropic extraction provider is unavailable") from exc

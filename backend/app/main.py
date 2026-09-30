@@ -4,7 +4,8 @@
 from contextlib import asynccontextmanager
 import sqlite3
 from pathlib import Path
-from fastapi import FastAPI
+from urllib.parse import urlsplit
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -32,11 +33,33 @@ app = FastAPI(
 # CORS configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=["http://127.0.0.1:5173"] if settings.APP_ENV == "development" else [],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.middleware("http")
+async def local_browser_boundary(request: Request, call_next):
+    # Host validation prevents DNS rebinding. Origin checks must reject the
+    # request itself: CORS alone only controls whether browsers can read it.
+    host = request.headers.get("host", "")
+    try:
+        hostname = urlsplit(f"http://{host}").hostname
+    except ValueError:
+        hostname = None
+    if hostname not in {"127.0.0.1", "localhost", "::1"}:
+        return JSONResponse(status_code=403, content={"detail": "OrderMind requires a localhost Host"})
+    allowed_origins = {f"{request.url.scheme}://{host}"}
+    if settings.APP_ENV == "development":
+        allowed_origins.add("http://127.0.0.1:5173")
+    origin = request.headers.get("origin")
+    if origin is not None and origin not in allowed_origins:
+        return JSONResponse(status_code=403, content={"detail": "OrderMind requires a trusted local origin"})
+    if origin is None and request.headers.get("sec-fetch-site") == "cross-site":
+        return JSONResponse(status_code=403, content={"detail": "Cross-site browser requests are not allowed"})
+    return await call_next(request)
+
 
 # Include API router
 app.include_router(api_router)
