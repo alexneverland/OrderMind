@@ -94,8 +94,21 @@ const baseOrder = (): Order => ({
   ],
 });
 let current: Order;
-it("bulk confirmation refreshes readiness and shows skipped reasons without individual confirmation", async () => {
+it("offers bulk confirmation when all generated lines are auto accepted", async () => {
+  current.lines[0].status = "auto_accepted";
+  mock.confirmSafeLines.mockImplementation(async () => {
+    current.lines[0].status = "confirmed";
+    current.version += 1;
+    return { confirmed_count: 1, skipped: [], version: current.version };
+  });
+  show();
+  fireEvent.click(await screen.findByRole("button", { name: "Confirm safe matches (95%+)" }));
+  await screen.findByText(/1 lines confirmed/);
+  expect(screen.queryByRole("button", { name: "Confirm safe matches (95%+)" })).not.toBeInTheDocument();
+});
+it.each(["needs_review", "auto_accepted"])("bulk confirmation includes %s lines and shows skipped reasons", async (status) => {
   current.lines.push({ ...structuredClone(current.lines[0]), id: 8, line_number: 2 });
+  current.lines[0].status = status;
   mock.confirmSafeLines.mockImplementation(async () => {
     current.lines[0].status = "confirmed";
     current.version += 1;

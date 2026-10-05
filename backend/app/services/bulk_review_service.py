@@ -98,18 +98,23 @@ def confirm_safe_lines(db: Session, order_id: int, company_id: int, expected_ver
             CustomerProductAlias.company_id == company_id, CustomerProductAlias.customer_id == order.customer_id,
             CustomerProductAlias.active.is_(True))).all())
         confirmed, skipped = [], []
+        changed = False
         for line in order.lines:
-            if line.status != "needs_review":
+            if line.status not in {"needs_review", "auto_accepted"}:
                 continue
             reason = _unsafe_reason(db, order, line, business, preferences, aliases)
             if reason:
                 skipped.append({"line_id": line.id, "line_number": line.line_number, "reason": reason})
+                if line.status == "auto_accepted":
+                    line.status = "needs_review"
+                    changed = True
             else:
                 line.status = "confirmed"
                 line.confidence_reasons = [*line.confidence_reasons, "Operator bulk confirmation: safe match checks passed"]
                 confirmed.append(line.id)
+                changed = True
         # No alias counters: selecting by machine confidence must not reinforce itself.
-        if confirmed:
+        if changed:
             order.version += 1
         db.commit()
         return {"confirmed_count": len(confirmed), "skipped": skipped, "version": order.version}

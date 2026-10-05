@@ -650,7 +650,7 @@ export function OrderReviewPage() {
                 )}
               </div>
               {order.revision_source && needsReview > 0 && <button className="button" type="button" disabled={busy} onClick={() => void recheckRevision()}>Recheck unchanged lines</button>}
-              {!order.revision_source && needsReview > 0 && <button className="button" type="button" disabled={busy} onClick={() => void confirmSafe()}>Confirm safe matches (95%+)</button>}
+              {!order.revision_source && order.lines.some((line) => line.status === "needs_review" || line.status === "auto_accepted") && <button className="button" type="button" disabled={busy} onClick={() => void confirmSafe()}>Confirm safe matches (95%+)</button>}
               {bulkResult && <div role="status" className="bulk-review-result">
                 <p>{bulkResult.confirmed_count} lines confirmed · {bulkResult.skipped.length} need individual review.</p>
                 {bulkResult.skipped.length > 0 && <details><summary>Why these lines need review</summary><ul>

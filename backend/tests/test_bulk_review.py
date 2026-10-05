@@ -1,4 +1,5 @@
 import copy
+import pytest
 
 from sqlalchemy import select, func
 
@@ -143,3 +144,43 @@ def test_concurrent_bulk_requests_reject_stale_version(tmp_path):
             assert db.scalar(select(func.count()).select_from(CustomerProductAlias)) == 0
     finally:
         engine.dispose()
+
+
+@pytest.mark.parametrize("learned_unit", [False, True])
+def test_bulk_reaches_safe_lines_from_normal_order_creation(db_session, client, learned_unit):
+    source, _, product = approved_order(db_session)
+    if learned_unit:
+        db_session.add(CompanyBusinessSettings(company_id=source.company_id,
+            unitless_order_behavior="learned_product_preference", learn_unit_preferences=True))
+        db_session.add(CompanyProductUnitPreference(company_id=source.company_id, product_id=product.id, unit="piece"))
+        db_session.commit()
+    text = "TEST-1 3" if learned_unit else "TEST-1 3 pieces"
+    response = client.post("/api/v1/orders/create-from-match", json={
+        "company_id": source.company_id, "customer_id": source.customer_id, "raw_input": text,
+        "items": [{"line_number": 1, "original_text": text, "product_phrase": "TEST-1", "quantity": 3,
+            "unit": "unknown" if learned_unit else "piece", "raw_unit": None if learned_unit else "pieces",
+            "unit_explicit": not learned_unit}],
+    })
+    assert response.status_code == 201, response.text
+    data = response.json()
+    assert data["lines"][0]["confidence_score"] >= .95
+    assert data["lines"][0]["status"] == ("needs_review" if learned_unit else "auto_accepted")
+    response = client.post(f"/api/v1/orders/{data['id']}/confirm-safe", params={
+        "company_id": source.company_id, "expected_version": data["version"],
+    })
+    assert response.status_code == 200, response.text
+    assert response.json()["confirmed_count"] == 1 and response.json()["skipped"] == []
+    persisted = client.get(f"/api/v1/orders/{data['id']}").json()
+    assert persisted["lines"][0]["status"] == "confirmed"
+
+
+def test_bulk_downgrades_unsafe_auto_accepted_line(db_session, client):
+    order, _ = pending_order(db_session)
+    for line in order.lines: line.status = "auto_accepted"
+    order.lines[1].final_quantity = 999
+    version = order.version
+    db_session.commit()
+    result = confirm(client, order).json()
+    assert result["confirmed_count"] == 1 and result["version"] == version + 1
+    db_session.expire_all()
+    assert [line.status for line in order.lines] == ["confirmed", "needs_review"]
