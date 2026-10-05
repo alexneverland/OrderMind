@@ -101,6 +101,16 @@ export const updateFinalValues = (
   });
 export const approveOrder = (id: number) =>
   request(`/orders/${id}/approve`, { method: "POST" });
+export const createOrderRevision = (id: number, companyId: number, requestId: string) =>
+  request<Order>(`/orders/${id}/revisions`, {
+    method: "POST", body: JSON.stringify({ company_id: companyId, request_id: requestId }),
+  });
+export const recheckOrderRevision = (id: number, companyId: number) =>
+  request<Order>(`/orders/${id}/revision-review?company_id=${companyId}`, { method: "POST" });
+export const confirmSafeLines = (order: Order) =>
+  request<{ confirmed_count: number; skipped: { line_id: number; line_number: number; reason: string }[]; version: number }>(
+    `/orders/${order.id}/confirm-safe?company_id=${order.company_id}&expected_version=${order.version}`, { method: "POST" },
+  );
 export const exportOrder = (orderId: number, profileId: number) =>
   download(`/orders/${orderId}/export/${profileId}`);
 export type PalletPreview = {

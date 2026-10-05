@@ -25,7 +25,7 @@ def test_fresh_sqlite_database_reaches_model_head(tmp_path: Path):
     _alembic(database, "check")
     with sqlite3.connect(database) as connection:
         connection.execute("PRAGMA foreign_keys=ON")
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("b8c9d20015",)
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("c9d20016",)
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
         connection.execute("INSERT INTO companies (id,name) VALUES (1,'A'),(2,'B')")
         connection.execute("INSERT INTO products (id,company_id,sku,description,unit,active) VALUES (1,1,'SKU-A','Product A','piece',1)")

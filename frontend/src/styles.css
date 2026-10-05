@@ -665,6 +665,9 @@ summary:focus-visible {
   align-items: center;
   gap: 20px;
 }
+.bulk-review-actions { flex-wrap: wrap; }
+.bulk-review-actions > .button { flex-shrink: 0; }
+.bulk-review-result { flex-basis: 100%; order: 1; }
 .action-panel h2 {
   margin-bottom: 4px;
 }
