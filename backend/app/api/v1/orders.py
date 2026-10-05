@@ -14,7 +14,7 @@ from backend.app.core.database import get_db
 from backend.app.core.text_normalizer import (
     normalize_text, is_quantity_grounded_in_span, is_unit_grounded_in_span,
 )
-from backend.app.models.order import Order, OrderLine
+from backend.app.models.order import Order, OrderLine, OrderRevision
 from backend.app.models.export import ExportProfile
 from backend.app.models.memory import CustomerProductAlias
 from backend.app.schemas.order import OrderParseRequest, OrderParseResponse, NormalizedOrderLine
@@ -35,6 +35,8 @@ from backend.app.schemas.workflow import (
     OrderApprovalResponse,
     OrderLineUpdateValuesRequest,
     OrderListItem,
+    OrderRevisionRequest,
+    OrderReference,
 )
 from backend.app.services.order_parsing_service import OrderParsingService
 from backend.app.services.matching_engine import MatchingEngine
@@ -56,6 +58,42 @@ from backend.app.services.company_rule_service import effective_bonus
 
 logger = logging.getLogger("ordermind.orders_api")
 router = APIRouter(prefix="/orders", tags=["Orders"])
+
+
+@router.post("/{order_id}/confirm-safe")
+def confirm_safe_order_lines(order_id: int, company_id: int = Query(gt=0), expected_version: int = Query(gt=0), db: Session = Depends(get_db)):
+    from backend.app.services.bulk_review_service import confirm_safe_lines, BulkReviewConflict
+    try:
+        return confirm_safe_lines(db, order_id, company_id, expected_version)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except BulkReviewConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/{order_id}/revisions", response_model=OrderResponse, status_code=201)
+def create_order_revision(order_id: int, payload: OrderRevisionRequest, db: Session = Depends(get_db)):
+    from backend.app.services.order_revision_service import create_revision, RevisionConflictError
+    try:
+        return create_revision(db, order_id, payload.company_id, str(payload.request_id))
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RevisionConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Revision changed concurrently; retry with the same request") from exc
+
+
+@router.post("/{order_id}/revision-review", response_model=OrderResponse)
+def review_unchanged_revision_lines(order_id: int, company_id: int = Query(gt=0), db: Session = Depends(get_db)):
+    from backend.app.services.order_revision_service import recheck_revision, RevisionConflictError
+    try:
+        return recheck_revision(db, order_id, company_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RevisionConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.post("/file-preview")
@@ -495,6 +533,13 @@ def get_order_endpoint(
             detail=f"Order with id {order_id} not found"
         )
     response = OrderResponse.model_validate(order)
+    predecessor = db.get(OrderRevision, order.id)
+    if predecessor:
+        response.revision_source = OrderReference.model_validate(db.get(Order, predecessor.source_order_id))
+    successors = db.execute(select(Order).join(OrderRevision, OrderRevision.revision_order_id == Order.id).where(
+        OrderRevision.source_order_id == order.id, OrderRevision.company_id == order.company_id,
+    ).order_by(Order.created_at, Order.id)).scalars().all()
+    response.revisions = [OrderReference.model_validate(successor) for successor in successors]
     if order.status in ("approved", "exported") and isinstance(order.approved_snapshot, dict):
         response.pallet_profile_ids = [
             int(profile_id)

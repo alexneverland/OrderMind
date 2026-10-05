@@ -13,6 +13,7 @@ import type { Order } from "../types";
 const mock = vi.hoisted(() => ({
   getOrder: vi.fn(),
   confirmLine: vi.fn(),
+  confirmSafeLines: vi.fn(),
   correctLine: vi.fn(),
   updateFinalValues: vi.fn(),
   approveOrder: vi.fn(),
@@ -25,6 +26,7 @@ const mock = vi.hoisted(() => ({
 vi.mock("../api/orders", () => ({
   getOrder: mock.getOrder,
   confirmLine: mock.confirmLine,
+  confirmSafeLines: mock.confirmSafeLines,
   correctLine: mock.correctLine,
   updateFinalValues: mock.updateFinalValues,
   approveOrder: mock.approveOrder,
@@ -37,6 +39,7 @@ vi.mock("../api/client", () => ({ saveDownload: mock.saveDownload }));
 
 const baseOrder = (): Order => ({
   id: 1,
+  version: 1,
   company_id: 3,
   customer_id: 4,
   customer: { id: 4, customer_code: "C-4", customer_name: "Deli" },
@@ -91,6 +94,35 @@ const baseOrder = (): Order => ({
   ],
 });
 let current: Order;
+it("offers bulk confirmation when all generated lines are auto accepted", async () => {
+  current.lines[0].status = "auto_accepted";
+  mock.confirmSafeLines.mockImplementation(async () => {
+    current.lines[0].status = "confirmed";
+    current.version += 1;
+    return { confirmed_count: 1, skipped: [], version: current.version };
+  });
+  show();
+  fireEvent.click(await screen.findByRole("button", { name: "Confirm safe matches (95%+)" }));
+  await screen.findByText(/1 lines confirmed/);
+  expect(screen.queryByRole("button", { name: "Confirm safe matches (95%+)" })).not.toBeInTheDocument();
+});
+it.each(["needs_review", "auto_accepted"])("bulk confirmation includes %s lines and shows skipped reasons", async (status) => {
+  current.lines.push({ ...structuredClone(current.lines[0]), id: 8, line_number: 2 });
+  current.lines[0].status = status;
+  mock.confirmSafeLines.mockImplementation(async () => {
+    current.lines[0].status = "confirmed";
+    current.version += 1;
+    return { confirmed_count: 1, skipped: [{ line_id: 8, line_number: 2, reason: "Competing product matches" }], version: current.version };
+  });
+  show();
+  fireEvent.click(await screen.findByRole("button", { name: "Confirm safe matches (95%+)" }));
+  await screen.findByText(/1 lines confirmed/);
+  expect(mock.confirmSafeLines).toHaveBeenCalledWith(expect.objectContaining({ id: 1, company_id: 3, version: 1 }));
+  expect(mock.confirmLine).not.toHaveBeenCalled();
+  expect(screen.getByRole("button", { name: "Approve order" })).toBeDisabled();
+  fireEvent.click(screen.getByText("Why these lines need review"));
+  expect(screen.getByText(/Line 2: Competing product matches/)).toBeInTheDocument();
+});
 const show = () =>
   render(
     <MemoryRouter initialEntries={["/orders/1"]}>

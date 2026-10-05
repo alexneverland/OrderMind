@@ -64,6 +64,20 @@ class Order(Base):
     export_records = relationship("ExportRecord", back_populates="order", cascade="all, delete-orphan", order_by="desc(ExportRecord.created_at)", foreign_keys="ExportRecord.order_id")
 
 
+class OrderRevision(Base):
+    """A new reviewable order linked to its immutable approved predecessor."""
+    __tablename__ = "order_revisions"
+    __table_args__ = (
+        UniqueConstraint("company_id", "request_key", name="uq_revision_request"),
+        ForeignKeyConstraint(["source_order_id", "company_id"], ["orders.id", "orders.company_id"], ondelete="RESTRICT", name="fk_revision_source_company"),
+        ForeignKeyConstraint(["revision_order_id", "company_id"], ["orders.id", "orders.company_id"], ondelete="CASCADE", name="fk_revision_order_company"),
+    )
+    revision_order_id = Column(Integer, primary_key=True)
+    source_order_id = Column(Integer, nullable=False, index=True)
+    company_id = Column(Integer, nullable=False)
+    request_key = Column(String(36), nullable=False)
+
+
 class OrderLine(Base):
     __tablename__ = "order_lines"
     __table_args__ = (

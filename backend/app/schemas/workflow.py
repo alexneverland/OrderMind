@@ -2,6 +2,7 @@ from pydantic import BaseModel, Field, ConfigDict
 from typing import List, Optional, Any
 from datetime import datetime
 from enum import Enum
+from uuid import UUID
 
 from backend.app.schemas.matching import LineMatchResult
 
@@ -93,8 +94,21 @@ class OrderLineResponse(BaseModel):
     candidates: List[OrderCandidateDto] = Field(default_factory=list)
 
 
+class OrderReference(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    order_number: str
+    status: str
+
+
+class OrderRevisionRequest(BaseModel):
+    company_id: int = Field(gt=0)
+    request_id: UUID
+
+
 class OrderResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
+    version: int
 
     id: int
     company_id: int
@@ -111,6 +125,8 @@ class OrderResponse(BaseModel):
     last_export_profile_id: Optional[int] = None
     export_records: List[ExportRecordBrief] = Field(default_factory=list)
     pallet_profile_ids: List[int] = Field(default_factory=list)
+    revision_source: Optional[OrderReference] = None
+    revisions: List[OrderReference] = Field(default_factory=list)
     lines: List[OrderLineResponse] = Field(default_factory=list)
 
 

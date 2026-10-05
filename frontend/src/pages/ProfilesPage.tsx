@@ -9,6 +9,7 @@ import {
 } from "../api/exportProfiles";
 import { useCompany } from "../components/AppShell";
 import { PalletEditor, emptyPalletConfig } from "../components/PalletEditor";
+import { PalletRulesAssistant } from "../components/PalletRulesAssistant";
 import { getProducts } from "../api/masterData";
 import { Alert, Empty, Spinner } from "../components/ui";
 import { useAsync } from "../hooks/useAsync";
@@ -43,6 +44,8 @@ function ProfileEditor({
   const [bonusMarker, setBonusMarker] = useState(profile?.bonus_marker ?? "");
   const [quantityOutputUnit, setQuantityOutputUnit] = useState<"source" | "piece">(profile?.quantity_output_unit ?? "source");
   const [palletization, setPalletization] = useState<PalletConfig>(profile?.palletization ?? emptyPalletConfig());
+  const [palletManualOpen, setPalletManualOpen] = useState(false);
+  const [analyzingPallets, setAnalyzingPallets] = useState(false);
   const [products, setProducts] = useState<Product[]>([]);
   useEffect(() => { void getProducts(companyId).then(setProducts).catch(() => setProducts([])); }, [companyId]);
   const [mappings, setMappings] = useState<Mapping[]>(
@@ -78,6 +81,7 @@ function ProfileEditor({
     });
   const save = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (busy || analyzingPallets) return;
     setBusy(true);
     setError("");
     const input: ProfileInput = {
@@ -114,7 +118,7 @@ function ProfileEditor({
     <div
       className="modal-backdrop"
       onMouseDown={() => {
-        if (!busy) onClose();
+        if (!busy && !analyzingPallets) onClose();
       }}
     >
       <section
@@ -133,7 +137,7 @@ function ProfileEditor({
             className="icon-button"
             onClick={onClose}
             aria-label="Close"
-            disabled={busy}
+            disabled={busy || analyzingPallets}
           >
             ×
           </button>
@@ -155,7 +159,7 @@ function ProfileEditor({
               <select
                 value={format}
                 onChange={(e) => setFormat(e.target.value)}
-                disabled={!!profile && profile.format === "order_sheet"}
+                disabled={analyzingPallets || (!!profile && profile.format === "order_sheet")}
               >
                 <option value="xlsx">XLSX</option>
                 <option value="csv">CSV</option>
@@ -211,7 +215,12 @@ function ProfileEditor({
                   <option value="piece">Pieces (convert cases using pieces per case)</option>
                 </select>
               </label>
-              <PalletEditor value={palletization} products={products} onChange={setPalletization} />
+              <PalletRulesAssistant companyId={companyId} products={products} disabled={busy}
+                onBusyChange={setAnalyzingPallets} onUse={(config) => { setPalletization(config); setPalletManualOpen(true); }} />
+              <details open={palletManualOpen} onToggle={(event) => setPalletManualOpen(event.currentTarget.open)}>
+                <summary>Manual pallet settings</summary>
+                <PalletEditor value={palletization} products={products} onChange={setPalletization} />
+              </details>
             </div>
           )}
           {format !== "order_sheet" && <>
@@ -326,11 +335,11 @@ function ProfileEditor({
               className="button"
               type="button"
               onClick={onClose}
-              disabled={busy}
+              disabled={busy || analyzingPallets}
             >
               Cancel
             </button>
-            <button className="button primary" disabled={busy}>
+            <button className="button primary" disabled={busy || analyzingPallets}>
               {busy ? <Spinner /> : "Save profile"}
             </button>
           </div>

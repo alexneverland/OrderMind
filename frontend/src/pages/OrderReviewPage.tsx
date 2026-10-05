@@ -1,7 +1,10 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   approveOrder,
+  createOrderRevision,
+  recheckOrderRevision,
+  confirmSafeLines,
   confirmLine,
   correctLine,
   exportOrder,
@@ -407,8 +410,10 @@ function LineCard({
 }
 
 export function OrderReviewPage() {
+  const navigate = useNavigate();
   const { orderId } = useParams();
   const id = Number(orderId);
+  const revisionRequest = useRef<{ sourceId: number; key: string } | null>(null);
   const [previewProfileId, setPreviewProfileId] = useState("");
   const [profileId, setProfileId] = useState("");
   const {
@@ -448,6 +453,8 @@ export function OrderReviewPage() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [palletPreview, setPalletPreview] = useState<PalletPreview | null>(null);
+  const [bulkResult, setBulkResult] = useState<Awaited<ReturnType<typeof confirmSafeLines>> | null>(null);
+  useEffect(() => setBulkResult(null), [id]);
   useEffect(() => setPalletPreview(null), [profileId, order?.id, order?.status]);
   useEffect(() => {
     if (!previewProfileId) {
@@ -456,6 +463,7 @@ export function OrderReviewPage() {
     }
   }, [profiles, previewProfileId]);
   const [confirmApproval, setConfirmApproval] = useState(false);
+  const [confirmRevision, setConfirmRevision] = useState(false);
   if (loading && !order)
     return (
       <div className="center">
@@ -479,6 +487,18 @@ export function OrderReviewPage() {
     (l) => l.status === "unresolved",
   ).length;
   const previewProfile = profiles?.find((p) => p.id === Number(previewProfileId) && p.format === "order_sheet") || null;
+  const confirmSafe = async () => {
+    if (busy) return;
+    setBusy(true); setError("");
+    try {
+      const result = await confirmSafeLines(order);
+      await refreshAtCurrentLine();
+      setBulkResult(result);
+    } catch (e) {
+      try { await refreshAtCurrentLine(); } catch { /* Loader shows refresh errors. */ }
+      setError((e as Error).message);
+    } finally { setBusy(false); }
+  };
   const approve = async () => {
     setBusy(true);
     setError("");
@@ -512,11 +532,37 @@ export function OrderReviewPage() {
       setBusy(false);
     }
   };
+  const revise = async () => {
+    if (busy) return;
+    if (revisionRequest.current?.sourceId !== order.id) {
+      revisionRequest.current = { sourceId: order.id, key: crypto.randomUUID() };
+    }
+    setBusy(true); setError("");
+    try {
+      const revision = await createOrderRevision(order.id, order.company_id, revisionRequest.current.key);
+      setPalletPreview(null); setConfirmApproval(false); setConfirmRevision(false);
+      navigate(`/orders/${revision.id}`);
+      window.scrollTo(0, 0);
+    } catch (cause) { setError((cause as Error).message); }
+    finally { setBusy(false); }
+  };
+  const recheckRevision = async () => {
+    if (busy) return;
+    setBusy(true); setError("");
+    try { await recheckOrderRevision(order.id, order.company_id); await refreshAtCurrentLine(); }
+    catch (cause) { setError((cause as Error).message); }
+    finally { setBusy(false); }
+  };
   return (
     <>
       <div className="breadcrumb">
         <Link to="/orders">Orders</Link> / {order.order_number}
       </div>
+      {order.revision_source && <p role="note">New revision of <Link to={`/orders/${order.revision_source.id}`}>{order.revision_source.order_number}</Link>. Unchanged approved lines are ready automatically. Review changed lines and the pallet preview before final approval.</p>}
+      {!!order.revisions?.length && <section className="panel padded" aria-label="Order revisions">
+        <h2>Newer revisions</h2>
+        <ul>{order.revisions.map((revision) => <li key={revision.id}><Link to={`/orders/${revision.id}`}>{revision.order_number}</Link> · {revision.status.replaceAll("_", " ")}</li>)}</ul>
+      </section>}
       <div className="page-head">
         <div>
           <div className="eyebrow">ORDER REVIEW</div>
@@ -590,7 +636,7 @@ export function OrderReviewPage() {
             />
           ))}
           {order.status === "pending_review" && (
-            <section className="panel action-panel">
+            <section className="panel action-panel bulk-review-actions">
               <div>
                 <h2>Ready to approve?</h2>
                 <p>
@@ -603,6 +649,14 @@ export function OrderReviewPage() {
                   </p>
                 )}
               </div>
+              {order.revision_source && needsReview > 0 && <button className="button" type="button" disabled={busy} onClick={() => void recheckRevision()}>Recheck unchanged lines</button>}
+              {!order.revision_source && order.lines.some((line) => line.status === "needs_review" || line.status === "auto_accepted") && <button className="button" type="button" disabled={busy} onClick={() => void confirmSafe()}>Confirm safe matches (95%+)</button>}
+              {bulkResult && <div role="status" className="bulk-review-result">
+                <p>{bulkResult.confirmed_count} lines confirmed · {bulkResult.skipped.length} need individual review.</p>
+                {bulkResult.skipped.length > 0 && <details><summary>Why these lines need review</summary><ul>
+                  {bulkResult.skipped.map((line) => <li key={line.line_id}>Line {line.line_number}: {line.reason}</li>)}
+                </ul></details>}
+              </div>}
               <button
                 className="button primary"
                 onClick={() => setConfirmApproval(true)}
@@ -626,6 +680,8 @@ export function OrderReviewPage() {
                   Approved {dateTime(order.approved_at)}. Business values are
                   read-only.
                 </p>
+                <p>Re-export uses the rules frozen at approval. To use current rules, create a new revision.</p>
+                <button className="button" type="button" disabled={busy} onClick={() => setConfirmRevision(true)}>New revision with current rules</button>
               </div>
               <div className="export-controls">
                 <label>
@@ -687,6 +743,18 @@ export function OrderReviewPage() {
           )}
         </div>
       </div>
+      {confirmRevision && <div className="modal-backdrop" onMouseDown={() => { if (!busy) setConfirmRevision(false); }}>
+        <section className="modal" role="dialog" aria-modal="true" aria-label="Create order revision" onMouseDown={(event) => event.stopPropagation()}>
+          <div className="eyebrow">NEW REVIEW</div>
+          <h2>New revision of {order.order_number}?</h2>
+          <p>The original order and export history stay unchanged. This creates a replacement version to review and approve, not an additional customer order.</p>
+          <p>Paid quantities and units are retained. Unchanged approved lines are ready automatically. Promotions are recalculated; changed bonuses, conversions, or unresolved products require review. Review the pallet preview and give one final approval to freeze current rules.</p>
+          <div className="modal-actions">
+            <button type="button" className="button" disabled={busy} onClick={() => setConfirmRevision(false)}>Cancel</button>
+            <button type="button" className="button primary" disabled={busy} onClick={() => void revise()}>{busy ? <Spinner /> : "Create revision"}</button>
+          </div>
+        </section>
+      </div>}
       {confirmApproval && (
         <div
           className="modal-backdrop"

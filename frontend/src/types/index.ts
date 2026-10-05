@@ -84,6 +84,7 @@ export type ExportRecord = {
 };
 export type Order = {
   id: number;
+  version: number;
   company_id: number;
   customer_id: number;
   customer: Pick<Customer, "id" | "customer_code" | "customer_name"> | null;
@@ -97,6 +98,8 @@ export type Order = {
   last_export_profile_id: number | null;
   export_records: ExportRecord[];
   pallet_profile_ids: number[];
+  revision_source?: { id: number; order_number: string; status: string } | null;
+  revisions?: { id: number; order_number: string; status: string }[];
   lines: OrderLine[];
 };
 export type OrderSummary = Pick<
