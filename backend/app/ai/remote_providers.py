@@ -5,7 +5,7 @@ import json
 from typing import Any, Dict, List, Optional
 
 from backend.app.ai.base import BaseAIProvider
-from backend.app.ai.prompt_boundaries import OCR_SYSTEM_PROMPT, extraction_policy, untrusted_text_payload
+from backend.app.ai.prompt_boundaries import OCR_SYSTEM_PROMPT, extraction_policy, parse_ai_json, untrusted_text_payload
 from backend.app.ai.gemini_provider import GeminiExtractionResponse, EXTRACTION_SYSTEM_PROMPT, GeminiProvider
 from backend.app.config import settings
 from backend.app.core.text_normalizer import resolve_unit
@@ -16,12 +16,10 @@ from backend.app.schemas.order import NormalizedOrderLineDraft
 def _drafts(raw: str) -> List[NormalizedOrderLineDraft]:
     if not raw:
         raise ValueError("AI provider returned no order text")
-    payload = json.loads(raw)
+    payload = parse_ai_json(raw)
     structured = GeminiExtractionResponse.model_validate(payload)
     results = []
     for item in structured.items:
-        if item.quantity <= 0:
-            continue
         unit, raw_unit, unit_explicit = resolve_unit(item.unit)
         results.append(NormalizedOrderLineDraft(
             original_text=item.original_text,
@@ -41,6 +39,8 @@ class OpenAIProvider(BaseAIProvider):
 
     def __init__(self):
         self.model_name = settings.AI_MODEL
+        if self.model_name == "mock-model":
+            self.model_name = "gpt-4.1-mini"
 
     def _client(self):
         if not settings.OPENAI_API_KEY:
@@ -88,6 +88,8 @@ class AnthropicProvider(BaseAIProvider):
 
     def __init__(self):
         self.model_name = settings.AI_MODEL
+        if self.model_name == "mock-model":
+            self.model_name = "claude-sonnet-4-20250514"
 
     def _client(self):
         if not settings.ANTHROPIC_API_KEY:

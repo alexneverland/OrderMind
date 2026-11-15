@@ -42,10 +42,16 @@ async def preview_import_file(
     """
     Reads an uploaded Excel file headers and sample rows, suggesting probable column mappings.
     """
-    if not (file.filename or "").lower().endswith((".xlsx", ".xls")):
+    filename = (file.filename or "").lower()
+    if filename.endswith(".xls"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="File must be an Excel spreadsheet (.xlsx or .xls)"
+            detail="Legacy .xls files are not supported; please save as .xlsx"
+        )
+    if not filename.endswith(".xlsx"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File must be an Excel spreadsheet (.xlsx)"
         )
 
     content = await _read_limited_upload(file)

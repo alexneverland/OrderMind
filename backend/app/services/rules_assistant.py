@@ -1,9 +1,9 @@
 """Interpret a description into a proposal; this module never persists rules."""
-import json
+import asyncio
 import re
 
 from backend.app.ai.factory import get_ai_provider
-from backend.app.ai.prompt_boundaries import UNTRUSTED_CONTENT_POLICY, untrusted_text_payload
+from backend.app.ai.prompt_boundaries import UNTRUSTED_CONTENT_POLICY, parse_ai_json, untrusted_text_payload
 from backend.app.schemas.rules import RulesAnalysis
 
 
@@ -110,16 +110,31 @@ async def analyze_rule_description(description: str) -> RulesAnalysis:
     prompt = untrusted_text_payload(description)
     if provider.name in {"gemini", "vertex"}:
         from google.genai import types
-        response = await provider._get_client().aio.models.generate_content(
-            model=provider.model_name, contents=prompt,
-            config=types.GenerateContentConfig(
-                system_instruction=RULES_SYSTEM_PROMPT,
-                response_mime_type="application/json", temperature=0.0,
-            ),
-        )
-        raw = response.text
+        client = provider._get_client()
+        raw = ""
+        try:
+            for attempt in range(3):
+                try:
+                    response = await client.aio.models.generate_content(
+                        model=provider.model_name, contents=prompt,
+                        config=types.GenerateContentConfig(
+                            system_instruction=RULES_SYSTEM_PROMPT,
+                            response_mime_type="application/json", temperature=0.0,
+                        ),
+                    )
+                    raw = response.text or ""
+                    break
+                except Exception as exc:
+                    if attempt == 2 or getattr(exc, "code", None) not in {429, 500, 502, 503, 504}:
+                        raise
+                    await asyncio.sleep(2 ** attempt)
+        finally:
+            if hasattr(client, "aio") and hasattr(client.aio, "aclose"):
+                await client.aio.aclose()
+            if hasattr(client, "close"):
+                client.close()
     else:
         raw = await provider._complete(prompt, system_instruction=RULES_SYSTEM_PROMPT)
     if not raw:
         raise ValueError("AI provider returned an empty proposal")
-    return RulesAnalysis.model_validate(json.loads(raw))
+    return RulesAnalysis.model_validate(parse_ai_json(raw))

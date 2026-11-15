@@ -113,8 +113,6 @@ class GeminiProvider(BaseAIProvider):
 
                 results: List[NormalizedOrderLineDraft] = []
                 for item in structured.items:
-                    if item.quantity <= 0:
-                        continue
                     canonical_unit, raw_unit, unit_explicit = resolve_unit(item.unit)
                     results.append(NormalizedOrderLineDraft(
                         original_text=item.original_text,
