@@ -637,18 +637,19 @@ export function OrderReviewPage() {
               </select>
             </label>
           )}
-          {(onlyAttention
-            ? order.lines.filter((line) => line.status === "needs_review" || line.status === "unresolved")
-            : order.lines
-          ).map((line) => (
-            <LineCard
+          {order.lines.map((line) => (
+            <div
               key={line.id}
-              order={order}
-              line={line}
-              previewProfile={previewProfile}
-              refresh={refreshAtCurrentLine}
-              setError={setError}
-            />
+              hidden={onlyAttention && line.status !== "needs_review" && line.status !== "unresolved"}
+            >
+              <LineCard
+                order={order}
+                line={line}
+                previewProfile={previewProfile}
+                refresh={refreshAtCurrentLine}
+                setError={setError}
+              />
+            </div>
           ))}
           {order.status === "pending_review" && (
             <section className="panel action-panel bulk-review-actions">

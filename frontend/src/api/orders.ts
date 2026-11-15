@@ -66,11 +66,25 @@ export const previewOrderFile = async (file: File): Promise<OrderFilePreview> =>
   const deadline = Date.now() + POLL_TIMEOUT_MS;
   let current = job;
   while (current.status === "pending" || current.status === "processing") {
-    if (Date.now() > deadline) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
       throw new Error("File extraction timed out; please retry.");
     }
-    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
-    current = await request<OrderFilePreviewJob>(`/orders/file-preview/jobs/${encodeURIComponent(current.job_id)}`);
+    await new Promise((resolve) => setTimeout(resolve, Math.min(POLL_INTERVAL_MS, remaining)));
+    const left = deadline - Date.now();
+    if (left <= 0) {
+      throw new Error("File extraction timed out; please retry.");
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), left);
+    try {
+      current = await request<OrderFilePreviewJob>(
+        `/orders/file-preview/jobs/${encodeURIComponent(current.job_id)}`,
+        { signal: controller.signal },
+      );
+    } finally {
+      clearTimeout(timer);
+    }
   }
   if (current.status === "failed") {
     throw new Error(current.error || "Could not read order file");

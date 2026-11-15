@@ -2,11 +2,14 @@
 
 import asyncio
 from io import BytesIO
+import logging
 from pathlib import Path
 
 from backend.app.config import settings
 from backend.app.core.office_archive import validate_office_archive, OfficeArchiveError
 from backend.app.ai.prompt_boundaries import OCR_SYSTEM_PROMPT
+
+logger = logging.getLogger("ordermind.order_file_service")
 
 
 SUPPORTED_EXTENSIONS = {".txt", ".csv", ".xlsx", ".docx", ".pdf", ".png", ".jpg", ".jpeg", ".webp"}
@@ -150,13 +153,13 @@ async def extract_order_file(filename: str, content: bytes) -> tuple[str, str]:
     extension = validate_order_file_upload(filename, content)
     try:
         if extension in {".txt", ".csv"}:
-            return _plain_text(content), "text"
+            return await asyncio.to_thread(_plain_text, content), "text"
         if extension == ".xlsx":
-            return _spreadsheet(content), "spreadsheet"
+            return await asyncio.to_thread(_spreadsheet, content), "spreadsheet"
         if extension == ".docx":
-            return _document(content), "document"
+            return await asyncio.to_thread(_document, content), "document"
         if extension == ".pdf":
-            text, needs_ocr = _pdf(content)
+            text, needs_ocr = await asyncio.to_thread(_pdf, content)
             if needs_ocr:
                 return await _transcribe(content, "application/pdf"), "ocr"
             return text, "pdf"
@@ -166,4 +169,5 @@ async def extract_order_file(filename: str, content: bytes) -> tuple[str, str]:
     except OfficeArchiveError as exc:
         raise OrderFileError(str(exc)) from exc
     except Exception as exc:
+        logger.warning("Order file extraction failed (%s): %s", extension, type(exc).__name__)
         raise OrderFileError("Could not read this order file; check that it is valid and unprotected") from exc

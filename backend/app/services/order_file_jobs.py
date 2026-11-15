@@ -1,10 +1,13 @@
 """Bounded in-memory async queue for large OCR/PDF file-preview extraction."""
 
 import asyncio
+import logging
 from threading import Lock
 import time
 import uuid
 from typing import Any, Optional
+
+logger = logging.getLogger("ordermind.order_file_jobs")
 
 from backend.app.services.order_file_service import (
     OrderFileError,
@@ -66,6 +69,7 @@ async def _run_file_preview_job(job_id: str, filename: str, content: bytes) -> N
                 _jobs[job_id]["error"] = str(exc)
                 _jobs[job_id]["updated_at"] = time.monotonic()
     except Exception:
+        logger.exception("File preview job %s failed", job_id)
         with _jobs_lock:
             if job_id in _jobs:
                 _jobs[job_id]["status"] = "failed"
