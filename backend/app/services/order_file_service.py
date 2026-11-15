@@ -126,7 +126,8 @@ async def _transcribe(content: bytes, mime_type: str) -> str:
     return _bounded_text(await provider.transcribe_file(content, mime_type, OCR_PROMPT))
 
 
-async def extract_order_file(filename: str, content: bytes) -> tuple[str, str]:
+def validate_order_file_upload(filename: str, content: bytes) -> str:
+    """Validate extension, size, and magic bytes before parsing or queuing."""
     extension = Path(filename).suffix.lower()
     if extension not in SUPPORTED_EXTENSIONS:
         raise OrderFileError("Unsupported order file. Use TXT, CSV, XLSX, DOCX, PDF, PNG, JPG or WebP")
@@ -134,6 +135,19 @@ async def extract_order_file(filename: str, content: bytes) -> tuple[str, str]:
         raise OrderFileError("The uploaded file is empty")
     if len(content) > settings.MAX_ORDER_UPLOAD_SIZE_BYTES:
         raise OrderFileError("Order file exceeds the 10 MB limit")
+    if extension == ".pdf" and not content.startswith(b"%PDF"):
+        raise OrderFileError("This is not a valid PDF file")
+    if extension == ".png" and not content.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise OrderFileError("This is not a valid PNG image")
+    if extension in {".jpg", ".jpeg"} and not content.startswith(b"\xff\xd8\xff"):
+        raise OrderFileError("This is not a valid JPEG image")
+    if extension == ".webp" and not (content.startswith(b"RIFF") and content[8:12] == b"WEBP"):
+        raise OrderFileError("This is not a valid WebP image")
+    return extension
+
+
+async def extract_order_file(filename: str, content: bytes) -> tuple[str, str]:
+    extension = validate_order_file_upload(filename, content)
     try:
         if extension in {".txt", ".csv"}:
             return _plain_text(content), "text"
@@ -142,18 +156,10 @@ async def extract_order_file(filename: str, content: bytes) -> tuple[str, str]:
         if extension == ".docx":
             return _document(content), "document"
         if extension == ".pdf":
-            if not content.startswith(b"%PDF"):
-                raise OrderFileError("This is not a valid PDF file")
             text, needs_ocr = _pdf(content)
             if needs_ocr:
                 return await _transcribe(content, "application/pdf"), "ocr"
             return text, "pdf"
-        if extension == ".png" and not content.startswith(b"\x89PNG\r\n\x1a\n"):
-            raise OrderFileError("This is not a valid PNG image")
-        if extension in {".jpg", ".jpeg"} and not content.startswith(b"\xff\xd8\xff"):
-            raise OrderFileError("This is not a valid JPEG image")
-        if extension == ".webp" and not (content.startswith(b"RIFF") and content[8:12] == b"WEBP"):
-            raise OrderFileError("This is not a valid WebP image")
         return await _transcribe(content, IMAGE_MIME[extension]), "ocr"
     except OrderFileError:
         raise

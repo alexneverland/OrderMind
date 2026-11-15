@@ -42,10 +42,44 @@ export type OrderFilePreview = {
   text: string;
   method: "text" | "spreadsheet" | "document" | "pdf" | "ocr";
 };
-export const previewOrderFile = (file: File) => {
+export type OrderFilePreviewJob = {
+  job_id: string;
+  status: "pending" | "processing" | "completed" | "failed";
+  filename: string | null;
+  text: string | null;
+  method: OrderFilePreview["method"] | null;
+  error: string | null;
+};
+const ASYNC_PREVIEW_EXTENSIONS = new Set([".pdf", ".png", ".jpg", ".jpeg", ".webp"]);
+const POLL_INTERVAL_MS = 800;
+const POLL_TIMEOUT_MS = 180_000;
+
+export const previewOrderFile = async (file: File): Promise<OrderFilePreview> => {
   const body = new FormData();
   body.append("file", file);
-  return request<OrderFilePreview>("/orders/file-preview", { method: "POST", body });
+  const dot = file.name.lastIndexOf(".");
+  const ext = dot >= 0 ? file.name.slice(dot).toLowerCase() : "";
+  if (!ASYNC_PREVIEW_EXTENSIONS.has(ext)) {
+    return request<OrderFilePreview>("/orders/file-preview", { method: "POST", body });
+  }
+  const job = await request<OrderFilePreviewJob>("/orders/file-preview/jobs", { method: "POST", body });
+  const deadline = Date.now() + POLL_TIMEOUT_MS;
+  let current = job;
+  while (current.status === "pending" || current.status === "processing") {
+    if (Date.now() > deadline) {
+      throw new Error("File extraction timed out; please retry.");
+    }
+    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+    current = await request<OrderFilePreviewJob>(`/orders/file-preview/jobs/${encodeURIComponent(current.job_id)}`);
+  }
+  if (current.status === "failed") {
+    throw new Error(current.error || "Could not read order file");
+  }
+  return {
+    filename: current.filename || file.name,
+    text: current.text || "",
+    method: current.method || "ocr",
+  };
 };
 export const createOrder = (
   payload: { company_id: number; customer_id: number; text: string },

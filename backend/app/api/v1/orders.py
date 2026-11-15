@@ -53,6 +53,7 @@ from backend.app.services.export_engine import (
     business_policy_for_order,
 )
 from backend.app.services.order_file_service import extract_order_file, OrderFileError
+from backend.app.services.order_file_jobs import submit_file_preview_job, get_file_preview_job
 from backend.app.services.business_settings_service import effective_business_settings, validate_order_quantity_policy
 from backend.app.services.company_rule_service import effective_bonus
 
@@ -107,6 +108,27 @@ async def preview_order_file(file: UploadFile = File(...)):
     except OrderFileError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"filename": file.filename, "text": extracted, "method": method}
+
+
+@router.post("/file-preview/jobs", status_code=status.HTTP_202_ACCEPTED)
+async def create_order_file_preview_job(file: UploadFile = File(...)):
+    """Queue asynchronous extraction for large OCR/PDF uploads without retaining binaries."""
+    content = await file.read(settings.MAX_ORDER_UPLOAD_SIZE_BYTES + 1)
+    if len(content) > settings.MAX_ORDER_UPLOAD_SIZE_BYTES:
+        raise HTTPException(status_code=413, detail="Order file exceeds the 10 MB limit")
+    try:
+        return submit_file_preview_job(file.filename or "", content)
+    except OrderFileError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/file-preview/jobs/{job_id}")
+async def get_order_file_preview_job(job_id: str):
+    """Poll status and extracted text of an asynchronous file-preview job."""
+    job = get_file_preview_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="File preview job not found or expired")
+    return job
 
 
 @router.get("/summary")
@@ -263,8 +285,9 @@ async def match_order_endpoint(
 
         if len(lines_to_process) > settings.MAX_ORDER_LINES:
             raise HTTPException(status_code=413, detail="Order line limit exceeded")
+        business_settings = effective_business_settings(db, payload.company_id)
         for item in lines_to_process:
-            validate_order_quantity_policy(effective_business_settings(db, payload.company_id), item.quantity_text, item.bonus_quantity)
+            validate_order_quantity_policy(business_settings, item.quantity_text, item.bonus_quantity)
             if normalize_text(item.original_text) not in normalize_text(raw_input):
                 raise ValueError(f"Line {item.line_number} is not present in raw order text")
             if not is_quantity_grounded_in_span(item.quantity, item.original_text, raw_input, item.product_phrase, item.quantity_text, item.bonus_quantity) or not is_unit_grounded_in_span(item.unit, item.raw_unit, item.unit_explicit, item.original_text, raw_input, item.product_phrase, item.quantity_text):
@@ -382,6 +405,7 @@ async def create_order_from_match_endpoint(
             if not raw_input.strip():
                 raise ValueError("Raw order text is required when supplying extracted items")
 
+            business_settings = effective_business_settings(db, payload.company_id)
             seen_line_numbers = set()
             for idx, it in enumerate(raw_items):
                 if isinstance(it, dict):
@@ -422,7 +446,7 @@ async def create_order_from_match_endpoint(
                     raise ValueError(f"Line {item.line_number} is not present in raw order text")
                 if normalize_text(item.product_phrase) not in normalize_text(item.original_text):
                     raise ValueError(f"Line {item.line_number} product phrase is not grounded in its order item")
-                validate_order_quantity_policy(effective_business_settings(db, payload.company_id), item.quantity_text, item.bonus_quantity)
+                validate_order_quantity_policy(business_settings, item.quantity_text, item.bonus_quantity)
                 if not is_quantity_grounded_in_span(
                     item.quantity, item.original_text, raw_input, item.product_phrase,
                     item.quantity_text, item.bonus_quantity,

@@ -41,19 +41,19 @@ function ProductDialog({
   onClose: () => void;
   onDone: () => Promise<void>;
 }) {
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState(line.product_phrase || "");
   const [products, setProducts] = useState<Product[]>([]);
   const [chosen, setChosen] = useState<number | null>(null);
   const [notes, setNotes] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const searchGeneration = useRef(0);
-  const search = async () => {
+  const search = async (term = query) => {
     const current = ++searchGeneration.current;
     setBusy(true);
     setError("");
     try {
-      const results = await getProducts(order.company_id, query);
+      const results = await getProducts(order.company_id, term);
       if (current === searchGeneration.current) {
         setProducts(results);
         setChosen(null);
@@ -464,6 +464,7 @@ export function OrderReviewPage() {
   }, [profiles, previewProfileId]);
   const [confirmApproval, setConfirmApproval] = useState(false);
   const [confirmRevision, setConfirmRevision] = useState(false);
+  const [onlyAttention, setOnlyAttention] = useState(false);
   if (loading && !order)
     return (
       <div className="center">
@@ -614,7 +615,18 @@ export function OrderReviewPage() {
               <div className="eyebrow">MATCHING</div>
               <h2>Review lines</h2>
             </div>
-            <span className="muted">{order.lines.length} lines</span>
+            <div style={{ display: "flex", gap: "0.75rem", alignItems: "center" }}>
+              {needsReview + unresolved > 0 && (
+                <button
+                  type="button"
+                  className="button"
+                  onClick={() => setOnlyAttention((prev) => !prev)}
+                >
+                  {onlyAttention ? "Show all lines" : `Needs attention (${needsReview + unresolved})`}
+                </button>
+              )}
+              <span className="muted">{order.lines.length} lines</span>
+            </div>
           </div>
           {!!profiles?.some((p) => p.format === "order_sheet") && (
             <label>Προεπισκόπηση προφίλ 4 στηλών
@@ -625,7 +637,10 @@ export function OrderReviewPage() {
               </select>
             </label>
           )}
-          {order.lines.map((line) => (
+          {(onlyAttention
+            ? order.lines.filter((line) => line.status === "needs_review" || line.status === "unresolved")
+            : order.lines
+          ).map((line) => (
             <LineCard
               key={line.id}
               order={order}
