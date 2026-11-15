@@ -81,3 +81,26 @@ def test_async_file_preview_job_rejects_invalid_pdf_upfront_and_404_unknown():
 
     missing = client.get("/api/v1/orders/file-preview/jobs/does-not-exist")
     assert missing.status_code == 404
+
+
+def test_async_file_preview_queue_preserves_active_jobs_and_rejects_overflow(monkeypatch):
+    import asyncio
+    from backend.app.services import order_file_jobs
+
+    order_file_jobs._jobs.clear()
+    monkeypatch.setattr(order_file_jobs, "MAX_RETAINED_JOBS", 2)
+
+    async def slow_extract(filename: str, content: bytes):
+        await asyncio.sleep(0.2)
+        return "slow text", "ocr"
+
+    monkeypatch.setattr(order_file_jobs, "extract_order_file", slow_extract)
+    client = TestClient(app, base_url="http://127.0.0.1:8001")
+    first = client.post("/api/v1/orders/file-preview/jobs", files={"file": ("a.txt", b"a", "text/plain")})
+    second = client.post("/api/v1/orders/file-preview/jobs", files={"file": ("b.txt", b"b", "text/plain")})
+    assert first.status_code == 202 and second.status_code == 202
+
+    third = client.post("/api/v1/orders/file-preview/jobs", files={"file": ("c.txt", b"c", "text/plain")})
+    assert third.status_code == 503
+    assert client.get(f"/api/v1/orders/file-preview/jobs/{first.json()['job_id']}").status_code == 200
+    order_file_jobs._jobs.clear()

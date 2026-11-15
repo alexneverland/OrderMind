@@ -19,7 +19,11 @@ _jobs: dict[str, dict[str, Any]] = {}
 _jobs_lock = Lock()
 
 
-def _prune_jobs_locked(now: float) -> None:
+class FilePreviewQueueFullError(RuntimeError):
+    pass
+
+
+def _expire_finished_jobs_locked(now: float) -> None:
     expired = [
         job_id
         for job_id, job in _jobs.items()
@@ -28,13 +32,17 @@ def _prune_jobs_locked(now: float) -> None:
     for job_id in expired:
         _jobs.pop(job_id, None)
 
+
+def _evict_for_insert_locked(now: float) -> None:
+    _expire_finished_jobs_locked(now)
     while len(_jobs) >= MAX_RETAINED_JOBS:
         oldest_finished = next(
             (job_id for job_id, job in _jobs.items() if job["status"] in {"completed", "failed"}),
             None,
         )
-        victim = oldest_finished or next(iter(_jobs))
-        _jobs.pop(victim, None)
+        if oldest_finished is None:
+            raise FilePreviewQueueFullError("File extraction queue is full; retry shortly")
+        _jobs.pop(oldest_finished, None)
 
 
 async def _run_file_preview_job(job_id: str, filename: str, content: bytes) -> None:
@@ -80,7 +88,7 @@ def submit_file_preview_job(filename: str, content: bytes) -> dict[str, Any]:
         "updated_at": now,
     }
     with _jobs_lock:
-        _prune_jobs_locked(now)
+        _evict_for_insert_locked(now)
         _jobs[job_id] = record
         snapshot = _public_job_view(record)
 
@@ -91,7 +99,7 @@ def submit_file_preview_job(filename: str, content: bytes) -> dict[str, Any]:
 def get_file_preview_job(job_id: str) -> Optional[dict[str, Any]]:
     now = time.monotonic()
     with _jobs_lock:
-        _prune_jobs_locked(now)
+        _expire_finished_jobs_locked(now)
         record = _jobs.get(job_id)
         if record is None:
             return None

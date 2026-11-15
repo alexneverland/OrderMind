@@ -616,7 +616,7 @@ export function OrderReviewPage() {
               <h2>Review lines</h2>
             </div>
             <div style={{ display: "flex", gap: "0.75rem", alignItems: "center" }}>
-              {needsReview + unresolved > 0 && (
+              {(needsReview + unresolved > 0 || onlyAttention) && (
                 <button
                   type="button"
                   className="button"
@@ -658,7 +658,7 @@ export function OrderReviewPage() {
                   Ready {ready} · Needs review {needsReview} · Unresolved{" "}
                   {unresolved}
                 </p>
-                {needsReview + unresolved > 0 && (
+                {(needsReview + unresolved > 0 || onlyAttention) && (
                   <p className="muted">
                     Resolve every pending line before approval.
                   </p>

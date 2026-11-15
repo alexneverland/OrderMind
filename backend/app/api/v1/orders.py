@@ -53,7 +53,7 @@ from backend.app.services.export_engine import (
     business_policy_for_order,
 )
 from backend.app.services.order_file_service import extract_order_file, OrderFileError
-from backend.app.services.order_file_jobs import submit_file_preview_job, get_file_preview_job
+from backend.app.services.order_file_jobs import submit_file_preview_job, get_file_preview_job, FilePreviewQueueFullError
 from backend.app.services.business_settings_service import effective_business_settings, validate_order_quantity_policy
 from backend.app.services.company_rule_service import effective_bonus
 
@@ -120,6 +120,8 @@ async def create_order_file_preview_job(file: UploadFile = File(...)):
         return submit_file_preview_job(file.filename or "", content)
     except OrderFileError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FilePreviewQueueFullError as exc:
+        raise HTTPException(status_code=503, detail=str(exc), headers={"Retry-After": "2"}) from exc
 
 
 @router.get("/file-preview/jobs/{job_id}")
